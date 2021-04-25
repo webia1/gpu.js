@@ -60,8 +60,6 @@ class FunctionNode {
     this.dynamicArguments = null;
     this.strictTypingChecking = false;
     this.fixIntegerDivisionAccuracy = null;
-    this.onIstanbulCoverageVariable = null;
-    this.removeIstanbulCoverage = false;
 
     if (settings) {
       for (const p in settings) {
@@ -153,7 +151,7 @@ class FunctionNode {
     if (ast.type === 'MemberExpression') {
       if (ast.object && ast.property) {
         //babel sniffing
-        if (ast.object.hasOwnProperty('name') && ast.object.name[0] === '_') {
+        if (ast.object.hasOwnProperty('name') && ast.object.name !== 'Math') {
           return this.astMemberExpressionUnroll(ast.property);
         }
 
@@ -255,7 +253,7 @@ class FunctionNode {
     }
 
     for (let i = 0; i < functions.length; i++) {
-      this.onNestedFunction(functions[i]);
+      this.onNestedFunction(functions[i], this.source);
     }
   }
 
@@ -364,6 +362,13 @@ class FunctionNode {
       case 'BlockStatement':
         return this.getType(ast.body);
       case 'ArrayExpression':
+        const childType = this.getType(ast.elements[0]);
+        switch (childType) {
+          case 'Array(2)':
+          case 'Array(3)':
+          case 'Array(4)':
+            return `Matrix(${ast.elements.length})`;
+        }
         return `Array(${ ast.elements.length })`;
       case 'Literal':
         const literalKey = this.astKey(ast);
@@ -391,6 +396,11 @@ class FunctionNode {
             }
             if (this.getVariableSignature(ast.callee, true) === 'this.color') {
               return null;
+            }
+            if (ast.callee.type === 'MemberExpression' && ast.callee.object && ast.callee.property && ast.callee.property.name && ast.arguments) {
+              const functionName = ast.callee.property.name;
+              this.inferArgumentTypesIfNeeded(functionName, ast.arguments);
+              return this.lookupReturnType(functionName, ast, this);
             }
             throw this.astErrorOutput('Unknown call expression', ast);
           }
@@ -474,11 +484,7 @@ class FunctionNode {
           if (this.isAstVariable(ast)) {
             const signature = this.getVariableSignature(ast);
             if (signature === 'value') {
-              const type = this.getVariableType(ast);
-              if (!type) {
-                throw this.astErrorOutput(`Unable to find identifier valueType`, ast);
-              }
-              return type;
+              return this.getCheckVariableType(ast);
             }
           }
           const origin = this.findIdentifierOrigin(ast);
@@ -504,13 +510,13 @@ class FunctionNode {
             const variableSignature = this.getVariableSignature(ast);
             switch (variableSignature) {
               case 'value[]':
-                return this.getLookupType(this.getVariableType(ast.object));
+                return this.getLookupType(this.getCheckVariableType(ast.object));
               case 'value[][]':
-                return this.getLookupType(this.getVariableType(ast.object.object));
+                return this.getLookupType(this.getCheckVariableType(ast.object.object));
               case 'value[][][]':
-                return this.getLookupType(this.getVariableType(ast.object.object.object));
+                return this.getLookupType(this.getCheckVariableType(ast.object.object.object));
               case 'value[][][][]':
-                return this.getLookupType(this.getVariableType(ast.object.object.object.object));
+                return this.getLookupType(this.getCheckVariableType(ast.object.object.object.object));
               case 'value.thread.value':
               case 'this.thread.value':
                 return 'Integer';
@@ -527,9 +533,7 @@ class FunctionNode {
               case 'this.constants.value[][][][]':
                 return this.getLookupType(this.getConstantType(ast.object.object.object.object.property.name));
               case 'fn()[]':
-                return this.getLookupType(this.getType(ast.object));
               case 'fn()[][]':
-                return this.getLookupType(this.getType(ast.object));
               case 'fn()[][][]':
                 return this.getLookupType(this.getType(ast.object));
               case 'value.value':
@@ -538,13 +542,10 @@ class FunctionNode {
                 }
                 switch (ast.property.name) {
                   case 'r':
-                    return this.getLookupType(this.getVariableType(ast.object));
                   case 'g':
-                    return this.getLookupType(this.getVariableType(ast.object));
                   case 'b':
-                    return this.getLookupType(this.getVariableType(ast.object));
                   case 'a':
-                    return this.getLookupType(this.getVariableType(ast.object));
+                    return this.getLookupType(this.getCheckVariableType(ast.object));
                 }
                 case '[][]':
                   return 'Number';
@@ -568,6 +569,14 @@ class FunctionNode {
         default:
           throw this.astErrorOutput(`Unhandled getType Type "${ ast.type }"`, ast);
     }
+  }
+
+  getCheckVariableType(ast) {
+    const type = this.getVariableType(ast);
+    if (!type) {
+      throw this.astErrorOutput(`${ast.type} is not defined`, ast);
+    }
+    return type;
   }
 
   inferArgumentTypesIfNeeded(functionName, args) {
@@ -605,15 +614,26 @@ class FunctionNode {
     const mathFunctions = [
       'abs',
       'acos',
+      'acosh',
       'asin',
+      'asinh',
       'atan',
       'atan2',
+      'atanh',
+      'cbrt',
       'ceil',
+      'clz32',
       'cos',
+      'cosh',
+      'expm1',
       'exp',
       'floor',
+      'fround',
+      'imul',
       'log',
       'log2',
+      'log10',
+      'log1p',
       'max',
       'min',
       'pow',
@@ -621,8 +641,11 @@ class FunctionNode {
       'round',
       'sign',
       'sin',
+      'sinh',
       'sqrt',
       'tan',
+      'tanh',
+      'trunc',
     ];
     return ast.type === 'CallExpression' &&
       ast.callee &&
@@ -828,8 +851,6 @@ class FunctionNode {
       'value[][][]',
       'value[][][][]',
       'value.value',
-      'value.value[]', // istanbul coverage
-      'value.value[][]', // istanbul coverage
       'value.thread.value',
       'this.thread.value',
       'this.output.value',
@@ -1096,20 +1117,11 @@ class FunctionNode {
   astThisExpression(ast, retArr) {
     return retArr;
   }
-  isIstanbulAST(ast) {
-    const variableSignature = this.getVariableSignature(ast);
-    return variableSignature === 'value.value[]' || variableSignature === 'value.value[][]';
-  }
   astSequenceExpression(sNode, retArr) {
     const { expressions } = sNode;
     const sequenceResult = [];
     for (let i = 0; i < expressions.length; i++) {
       const expression = expressions[i];
-      if (this.removeIstanbulCoverage) {
-        if (expression.type === 'UpdateExpression' && this.isIstanbulAST(expression.argument)) {
-          continue;
-        }
-      }
       const expressionResult = [];
       this.astGeneric(expression, expressionResult);
       sequenceResult.push(expressionResult.join(''));
@@ -1153,12 +1165,6 @@ class FunctionNode {
    * @returns {Array} the append retArr
    */
   astUpdateExpression(uNode, retArr) {
-    if (this.removeIstanbulCoverage) {
-      const signature = this.getVariableSignature(uNode.argument);
-      if (this.isIstanbulAST(uNode.argument)) {
-        return retArr;
-      }
-    }
     if (uNode.prefix) {
       retArr.push(uNode.operator);
       this.astGeneric(uNode.argument, retArr);
@@ -1367,33 +1373,14 @@ class FunctionNode {
           };
         }
         case 'fn()[]':
+        case 'fn()[][]':
         case '[][]':
           return {
             signature: variableSignature,
               property: ast.property,
           };
-        case 'value.value[]': // istanbul coverage
-          if (this.removeIstanbulCoverage) {
-            return { signature: variableSignature };
-          }
-          if (this.onIstanbulCoverageVariable) {
-            this.onIstanbulCoverageVariable(ast.object.object.name);
-            return {
-              signature: variableSignature
-            };
-          }
-          case 'value.value[][]': // istanbul coverage
-            if (this.removeIstanbulCoverage) {
-              return { signature: variableSignature };
-            }
-            if (this.onIstanbulCoverageVariable) {
-              this.onIstanbulCoverageVariable(ast.object.object.object.name);
-              return {
-                signature: variableSignature
-              };
-            }
-            default:
-              throw this.astErrorOutput('Unexpected expression', ast);
+        default:
+          throw this.astErrorOutput('Unexpected expression', ast);
     }
   }
 
@@ -1476,6 +1463,9 @@ const typeLookupMap = {
   'Array(2)': 'Number',
   'Array(3)': 'Number',
   'Array(4)': 'Number',
+  'Matrix(2)': 'Number',
+  'Matrix(3)': 'Number',
+  'Matrix(4)': 'Number',
   'Array2D': 'Number',
   'Array3D': 'Number',
   'Input': 'Number',

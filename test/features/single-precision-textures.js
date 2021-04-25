@@ -648,7 +648,7 @@ test('with Uint8ClampedArray3D cpu', () => {
   singlePrecisionTexturesWithUint8ClampedArray3D('headlessgl');
 });
 
-function testDoesNotCollideWithKernelTexture(mode) {
+function testImmutableDoesNotCollideWithKernelTexture(mode) {
   const gpu = new GPU({ mode });
   const kernel = gpu.createKernel(function(v) {
     return v[this.thread.x] + 1;
@@ -656,10 +656,12 @@ function testDoesNotCollideWithKernelTexture(mode) {
     output: [1],
     precision: 'single',
     pipeline: true,
+    immutable: true,
   });
   const v = [1];
   const result1 = kernel(v);
   assert.deepEqual(result1.toArray(), new Float32Array([2]));
+
   // kernel is getting ready to recompile, because a new type of input
   const result2 = kernel(result1);
   assert.deepEqual(result2.toArray(), new Float32Array([3]));
@@ -669,23 +671,23 @@ function testDoesNotCollideWithKernelTexture(mode) {
   gpu.destroy();
 }
 
-(GPU.isSinglePrecisionSupported ? test : skip)('does not collide with kernel texture auto', () => {
-  testDoesNotCollideWithKernelTexture();
+(GPU.isSinglePrecisionSupported ? test : skip)('immutable does not collide with kernel texture auto', () => {
+  testImmutableDoesNotCollideWithKernelTexture();
 });
 
-(GPU.isSinglePrecisionSupported ? test : skip)('does not collide with kernel texture gpu', () => {
-  testDoesNotCollideWithKernelTexture('gpu');
+(GPU.isSinglePrecisionSupported ? test : skip)('immutable does not collide with kernel texture gpu', () => {
+  testImmutableDoesNotCollideWithKernelTexture('gpu');
 });
 
-(GPU.isSinglePrecisionSupported && GPU.isWebGLSupported ? test : skip)('does not collide with kernel texture webgl', () => {
-  testDoesNotCollideWithKernelTexture('webgl');
+(GPU.isSinglePrecisionSupported && GPU.isWebGLSupported ? test : skip)('immutable does not collide with kernel texture webgl', () => {
+  testImmutableDoesNotCollideWithKernelTexture('webgl');
 });
 
-(GPU.isSinglePrecisionSupported && GPU.isWebGL2Supported ? test : skip)('does not collide with kernel texture webgl2', () => {
-  testDoesNotCollideWithKernelTexture('webgl2');
+(GPU.isSinglePrecisionSupported && GPU.isWebGL2Supported ? test : skip)('immutable does not collide with kernel texture webgl2', () => {
+  testImmutableDoesNotCollideWithKernelTexture('webgl2');
 });
 
-(GPU.isSinglePrecisionSupported && GPU.isHeadlessGLSupported ? test : skip)('does not collide with kernel texture headlessgl', () => {
-  testDoesNotCollideWithKernelTexture('headlessgl');
+(GPU.isSinglePrecisionSupported && GPU.isHeadlessGLSupported ? test : skip)('immutable does not collide with kernel texture headlessgl', () => {
+  testImmutableDoesNotCollideWithKernelTexture('headlessgl');
 });
 

@@ -220,8 +220,6 @@ class Kernel {
     this.optimizeFloatMemory = null;
     this.strictIntegers = false;
     this.fixIntegerDivisionAccuracy = null;
-    this.onIstanbulCoverageVariable = null;
-    this.removeIstanbulCoverage = false;
     this.built = false;
     this.signature = null;
   }
@@ -251,11 +249,6 @@ class Kernel {
             this.precision = 'unsigned';
           }
           this[p] = settings[p];
-          continue;
-        case 'removeIstanbulCoverage':
-          if (settings[p] !== null) {
-            this[p] = settings[p];
-          }
           continue;
         case 'nativeFunctions':
           if (!settings.nativeFunctions) continue;
@@ -606,7 +599,7 @@ class Kernel {
    * @return {this}
    */
   setImmutable(flag) {
-    utils.warnDeprecated('method', 'setImmutable');
+    this.immutable = flag;
     return this;
   }
 
@@ -903,7 +896,6 @@ class Kernel {
    */
   static getSignature(kernel, argumentTypes) {
     throw new Error(`"getSignature" not implemented on ${ this.name }`);
-    return argumentTypes.length > 0 ? ':' + argumentTypes.join(',') : '';
   }
 
   /**
@@ -933,6 +925,13 @@ class Kernel {
       returnType: settings.returnType || null,
     };
   }
+
+  /**
+   *
+   * @param {Kernel} previousKernel
+   * @abstract
+   */
+  onActivate(previousKernel) {}
 }
 
 function splitArgumentTypes(argumentTypesObject) {

@@ -87,7 +87,7 @@ class WebGLFunctionNode extends FunctionNode {
           retArr.push(', ');
         }
         let argumentType = this.argumentTypes[this.argumentNames.indexOf(argumentName)];
-        // The type is too loose ended, here we descide to solidify a type, lets go with float
+        // The type is too loose ended, here we decide to solidify a type, lets go with float
         if (!argumentType) {
           throw this.astErrorOutput(`Unknown argument ${argumentName} type`, ast);
         }
@@ -184,6 +184,9 @@ class WebGLFunctionNode extends FunctionNode {
       case 'Array(4)':
       case 'Array(3)':
       case 'Array(2)':
+      case 'Matrix(2)':
+      case 'Matrix(3)':
+      case 'Matrix(4)':
       case 'Input':
         this.astGeneric(ast.argument, result);
         break;
@@ -835,7 +838,7 @@ class WebGLFunctionNode extends FunctionNode {
       }
       const markupType = typeMap[type];
       if (!markupType) {
-        throw this.astErrorOutput(`Markup type ${ markupType } not handled`, varDecNode);
+        throw this.astErrorOutput(`Markup type ${ type } not handled`, varDecNode);
       }
       const declarationResult = [];
       if (actualType === 'Integer' && type === 'Integer') {
@@ -1142,7 +1145,7 @@ class WebGLFunctionNode extends FunctionNode {
             case 'Array(2)':
             case 'Array(3)':
             case 'Array(4)':
-              retArr.push(`constants_${ name }`);
+              retArr.push(`constants_${ utils.sanitizeName(name) }`);
               return retArr;
           }
         }
@@ -1157,19 +1160,23 @@ class WebGLFunctionNode extends FunctionNode {
           retArr.push(this.memberExpressionPropertyMarkup(property));
           retArr.push(']');
           return retArr;
+        case 'fn()[][]':
+          this.astCallExpression(mNode.object.object, retArr);
+          retArr.push('[');
+          retArr.push(this.memberExpressionPropertyMarkup(mNode.object.property));
+          retArr.push(']');
+          retArr.push('[');
+          retArr.push(this.memberExpressionPropertyMarkup(mNode.property));
+          retArr.push(']');
+          return retArr;
         case '[][]':
           this.astArrayExpression(mNode.object, retArr);
           retArr.push('[');
           retArr.push(this.memberExpressionPropertyMarkup(property));
           retArr.push(']');
           return retArr;
-        case 'value.value[]':
-        case 'value.value[][]':
-          if (this.removeIstanbulCoverage) {
-            return retArr;
-          }
-          default:
-            throw this.astErrorOutput('Unexpected expression', mNode);
+        default:
+          throw this.astErrorOutput('Unexpected expression', mNode);
     }
 
     if (mNode.computed === false) {
@@ -1179,14 +1186,14 @@ class WebGLFunctionNode extends FunctionNode {
         case 'Integer':
         case 'Float':
         case 'Boolean':
-          retArr.push(`${origin}_${name}`);
+          retArr.push(`${origin}_${utils.sanitizeName(name)}`);
           return retArr;
       }
     }
 
     // handle more complex types
     // argument may have come from a parent
-    const markupName = `${origin}_${name}`;
+    const markupName = `${origin}_${utils.sanitizeName(name)}`;
 
     switch (type) {
       case 'Array(2)':
@@ -1290,6 +1297,14 @@ class WebGLFunctionNode extends FunctionNode {
         this.memberExpressionXYZ(xProperty, yProperty, zProperty, retArr);
         retArr.push(')');
         break;
+      case 'Matrix(2)':
+      case 'Matrix(3)':
+      case 'Matrix(4)':
+        retArr.push(`${markupName}[${this.memberExpressionPropertyMarkup(yProperty)}]`);
+        if (yProperty) {
+          retArr.push(`[${this.memberExpressionPropertyMarkup(xProperty)}]`);
+        }
+        break;
       default:
         throw new Error(`unhandled member expression "${ type }"`);
     }
@@ -1326,8 +1341,13 @@ class WebGLFunctionNode extends FunctionNode {
     }
 
     // if this if grows to more than one, lets use a switch
-    if (functionName === 'atan2') {
-      functionName = 'atan';
+    switch (functionName) {
+      case 'pow':
+        functionName = '_pow';
+        break;
+      case 'round':
+        functionName = '_round';
+        break;
     }
 
     // Register the function into the called registry
@@ -1435,7 +1455,7 @@ class WebGLFunctionNode extends FunctionNode {
             if (targetType === argumentType) {
               if (argument.type === 'Identifier') {
                 retArr.push(`user_${utils.sanitizeName(argument.name)}`);
-              } else if (argument.type === 'ArrayExpression' || argument.type === 'MemberExpression') {
+              } else if (argument.type === 'ArrayExpression' || argument.type === 'MemberExpression' || argument.type === 'CallExpression') {
                 this.astGeneric(argument, retArr);
               } else {
                 throw this.astErrorOutput(`Unhandled argument type ${ argument.type }`, ast);
@@ -1478,9 +1498,19 @@ class WebGLFunctionNode extends FunctionNode {
    * @returns {Array} the append retArr
    */
   astArrayExpression(arrNode, retArr) {
+    const returnType = this.getType(arrNode);
+
     const arrLen = arrNode.elements.length;
 
-    retArr.push('vec' + arrLen + '(');
+    switch (returnType) {
+      case 'Matrix(2)':
+      case 'Matrix(3)':
+      case 'Matrix(4)':
+        retArr.push(`mat${arrLen}(`);
+        break;
+      default:
+        retArr.push(`vec${arrLen}(`);
+    }
     for (let i = 0; i < arrLen; ++i) {
       if (i > 0) {
         retArr.push(', ');
@@ -1534,6 +1564,9 @@ const typeMap = {
   'Array(2)': 'vec2',
   'Array(3)': 'vec3',
   'Array(4)': 'vec4',
+  'Matrix(2)': 'mat2',
+  'Matrix(3)': 'mat3',
+  'Matrix(4)': 'mat4',
   'Array2D': 'sampler2D',
   'Array3D': 'sampler2D',
   'Boolean': 'bool',

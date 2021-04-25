@@ -98,6 +98,14 @@ class WebGLKernel extends GLKernel {
     return testContext.getParameter(testContext.MAX_TEXTURE_SIZE);
   }
 
+  /**
+   *
+   * @param type
+   * @param dynamic
+   * @param precision
+   * @param value
+   * @returns {KernelValue}
+   */
   static lookupKernelValueType(type, dynamic, precision, value) {
     return lookupKernelValueType(type, dynamic, precision, value);
   }
@@ -145,8 +153,9 @@ class WebGLKernel extends GLKernel {
      */
     this.maxTexSize = null;
     this.onRequestSwitchKernel = null;
-    this.removeIstanbulCoverage = true;
 
+    this.texture = null;
+    this.mappedTextures = null;
     this.mergeSettings(source.settings || settings);
 
     /**
@@ -156,8 +165,7 @@ class WebGLKernel extends GLKernel {
     this.threadDim = null;
     this.framebuffer = null;
     this.buffer = null;
-    this.texture = null;
-    this.mappedTextures = null;
+
     this.textureCache = [];
     this.programUniformLocationCache = {};
     this.uniform1fCache = {};
@@ -363,7 +371,7 @@ class WebGLKernel extends GLKernel {
       return this.createTexture();
     };
     const onRequestIndex = () => {
-      return textureIndexes++;
+      return this.constantTextureCount + textureIndexes++;
     };
     const onUpdateValueMismatch = (constructor) => {
       this.switchKernels({
@@ -377,7 +385,7 @@ class WebGLKernel extends GLKernel {
 
     for (let index = 0; index < args.length; index++) {
       const value = args[index];
-      const name = utils.sanitizeName(this.argumentNames[index]);
+      const name = this.argumentNames[index];
       let type;
       if (needsArgumentTypes) {
         type = utils.getVariableType(value, this.strictIntegers);
@@ -426,8 +434,7 @@ class WebGLKernel extends GLKernel {
     }
     this.constantBitRatios = {};
     let textureIndexes = 0;
-    for (const p in this.constants) {
-      const name = utils.sanitizeName(p);
+    for (const name in this.constants) {
       const value = this.constants[name];
       let type;
       if (needsConstantTypes) {
@@ -469,6 +476,7 @@ class WebGLKernel extends GLKernel {
   }
 
   build() {
+    if (this.built) return;
     this.initExtensions();
     this.validateSettings(arguments);
     this.setupConstants(arguments);
@@ -528,6 +536,7 @@ class WebGLKernel extends GLKernel {
     this.framebuffer = gl.createFramebuffer();
     this.framebuffer.width = texSize[0];
     this.framebuffer.height = texSize[1];
+    this.rawValueFramebuffers = {};
 
     const vertices = new Float32Array([-1, -1,
       1, -1, -1, 1,
@@ -573,6 +582,7 @@ class WebGLKernel extends GLKernel {
       this.subKernels !== null &&
       this.subKernels.length > 0
     ) {
+      this._mappedTextureSwitched = {};
       this._setupSubOutputTextures();
     }
     this.buildSignature(arguments);
@@ -607,7 +617,6 @@ class WebGLKernel extends GLKernel {
 
     gl.useProgram(this.program);
     gl.scissor(0, 0, texSize[0], texSize[1]);
-
     if (this.dynamicOutput) {
       this.setUniform3iv('uOutputDim', new Int32Array(this.threadDim));
       this.setUniform2iv('uTexSize', texSize);
@@ -638,9 +647,11 @@ class WebGLKernel extends GLKernel {
       if (this.pipeline) {
         gl.bindRenderbuffer(gl.RENDERBUFFER, null);
         gl.bindFramebuffer(gl.FRAMEBUFFER, this.framebuffer);
-        this._setupOutputTexture();
+        if (this.immutable) {
+          this._replaceOutputTexture();
+        }
         gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
-        return this.texture.clone();
+        return this.immutable ? this.texture.clone() : this.texture;
       }
       gl.bindRenderbuffer(gl.RENDERBUFFER, null);
       gl.bindFramebuffer(gl.FRAMEBUFFER, null);
@@ -649,10 +660,14 @@ class WebGLKernel extends GLKernel {
     }
 
     gl.bindFramebuffer(gl.FRAMEBUFFER, this.framebuffer);
-    this._setupOutputTexture();
+    if (this.immutable) {
+      this._replaceOutputTexture();
+    }
 
     if (this.subKernels !== null) {
-      this._setupSubOutputTextures();
+      if (this.immutable) {
+        this._replaceSubOutputTextures();
+      }
       this.drawBuffers();
     }
 
@@ -677,12 +692,25 @@ class WebGLKernel extends GLKernel {
   }
 
   /**
-   * @desc Setup and replace output texture
+   *
+   * @desc replace output textures where arguments my be the same values
+   */
+  _replaceOutputTexture() {
+    if (this.texture.beforeMutate() || this._textureSwitched) {
+      const gl = this.context;
+      gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, this.texture.texture, 0);
+      this._textureSwitched = false;
+    }
+  }
+
+  /**
+   * @desc Setup output texture
    */
   _setupOutputTexture() {
-    const { context: gl, texSize } = this;
+    const gl = this.context;
+    const texSize = this.texSize;
     if (this.texture) {
-      this.texture.beforeMutate();
+      // here we inherit from an already existing kernel, so go ahead and just bind textures to the framebuffer
       gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, this.texture.texture, 0);
       return;
     }
@@ -713,15 +741,29 @@ class WebGLKernel extends GLKernel {
   }
 
   /**
-   * @desc Setup and replace sub-output textures
+   *
+   * @desc replace sub-output textures where arguments my be the same values
+   */
+  _replaceSubOutputTextures() {
+    const gl = this.context;
+    for (let i = 0; i < this.mappedTextures.length; i++) {
+      const mappedTexture = this.mappedTextures[i];
+      if (mappedTexture.beforeMutate() || this._mappedTextureSwitched[i]) {
+        gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0 + i + 1, gl.TEXTURE_2D, mappedTexture.texture, 0);
+        this._mappedTextureSwitched[i] = false;
+      }
+    }
+  }
+
+  /**
+   * @desc Setup on inherit sub-output textures
    */
   _setupSubOutputTextures() {
-    const { context: gl } = this;
-    if (this.mappedTextures && this.mappedTextures.length > 0) {
-      for (let i = 0; i < this.mappedTextures.length; i++) {
-        const mappedTexture = this.mappedTextures[i];
-        mappedTexture.beforeMutate();
-        gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0 + i + 1, gl.TEXTURE_2D, mappedTexture.texture, 0);
+    const gl = this.context;
+    if (this.mappedTextures) {
+      // here we inherit from an already existing kernel, so go ahead and just bind textures to the framebuffer
+      for (let i = 0; i < this.subKernels.length; i++) {
+        gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0 + i + 1, gl.TEXTURE_2D, this.mappedTextures[i].texture, 0);
       }
       return;
     }
@@ -1097,6 +1139,19 @@ float integerCorrectionModulo(float number, float divisor) {
     return result.join('');
   }
 
+  getRawValueFramebuffer(width, height) {
+    if (!this.rawValueFramebuffers[width]) {
+      this.rawValueFramebuffers[width] = {};
+    }
+    if (!this.rawValueFramebuffers[width][height]) {
+      const framebuffer = this.context.createFramebuffer();
+      framebuffer.width = width;
+      framebuffer.height = height;
+      this.rawValueFramebuffers[width][height] = framebuffer;
+    }
+    return this.rawValueFramebuffers[width][height];
+  }
+
   getKernelResultDeclaration() {
     switch (this.returnType) {
       case 'Array(2)':
@@ -1249,7 +1304,7 @@ float integerCorrectionModulo(float number, float divisor) {
     result.push(
       '  threadId = indexTo3D(index, uOutputDim)',
       '  kernel()',
-      `  gl_FragData[0].${channel} = kernelResult`,
+      `  gl_FragData[0].${channel} = kernelResult`
     );
   }
 
@@ -1259,11 +1314,11 @@ float integerCorrectionModulo(float number, float divisor) {
       const subKernel = this.subKernels[i];
       if (subKernel.returnType === 'Integer') {
         result.push(
-          `  gl_FragData[${i + 1}].${channel} = float(subKernelResult_${this.subKernels[i].name})`,
+          `  gl_FragData[${i + 1}].${channel} = float(subKernelResult_${this.subKernels[i].name})`
         );
       } else {
         result.push(
-          `  gl_FragData[${i + 1}].${channel} = subKernelResult_${this.subKernels[i].name}`,
+          `  gl_FragData[${i + 1}].${channel} = subKernelResult_${this.subKernels[i].name}`
         );
       }
     }
@@ -1284,11 +1339,11 @@ float integerCorrectionModulo(float number, float divisor) {
       const subKernel = this.subKernels[i];
       if (subKernel.returnType === 'Integer') {
         result.push(
-          `  gl_FragData[${i + 1}][0] = float(subKernelResult_${subKernel.name})`,
+          `  gl_FragData[${i + 1}][0] = float(subKernelResult_${subKernel.name})`
         );
       } else {
         result.push(
-          `  gl_FragData[${i + 1}][0] = subKernelResult_${subKernel.name}`,
+          `  gl_FragData[${i + 1}][0] = subKernelResult_${subKernel.name}`
         );
       }
     }
@@ -1310,7 +1365,7 @@ float integerCorrectionModulo(float number, float divisor) {
     for (let i = 0; i < this.subKernels.length; ++i) {
       result.push(
         `  gl_FragData[${i + 1}][0] = subKernelResult_${this.subKernels[i].name}[0]`,
-        `  gl_FragData[${i + 1}][1] = subKernelResult_${this.subKernels[i].name}[1]`,
+        `  gl_FragData[${i + 1}][1] = subKernelResult_${this.subKernels[i].name}[1]`
       );
     }
     return result;
@@ -1333,7 +1388,7 @@ float integerCorrectionModulo(float number, float divisor) {
       result.push(
         `  gl_FragData[${i + 1}][0] = subKernelResult_${this.subKernels[i].name}[0]`,
         `  gl_FragData[${i + 1}][1] = subKernelResult_${this.subKernels[i].name}[1]`,
-        `  gl_FragData[${i + 1}][2] = subKernelResult_${this.subKernels[i].name}[2]`,
+        `  gl_FragData[${i + 1}][2] = subKernelResult_${this.subKernels[i].name}[2]`
       );
     }
     return result;
@@ -1358,11 +1413,11 @@ float integerCorrectionModulo(float number, float divisor) {
           const subKernel = this.subKernels[i];
           if (subKernel.returnType === 'Integer') {
             result.push(
-              `  gl_FragData[${i + 1}] = float(subKernelResult_${this.subKernels[i].name})`,
+              `  gl_FragData[${i + 1}] = float(subKernelResult_${this.subKernels[i].name})`
             );
           } else {
             result.push(
-              `  gl_FragData[${i + 1}] = subKernelResult_${this.subKernels[i].name}`,
+              `  gl_FragData[${i + 1}] = subKernelResult_${this.subKernels[i].name}`
             );
           }
         }
@@ -1371,7 +1426,7 @@ float integerCorrectionModulo(float number, float divisor) {
         for (let i = 0; i < this.subKernels.length; ++i) {
           result.push(
             `  gl_FragData[${i + 1}][0] = subKernelResult_${this.subKernels[i].name}[0]`,
-            `  gl_FragData[${i + 1}][1] = subKernelResult_${this.subKernels[i].name}[1]`,
+            `  gl_FragData[${i + 1}][1] = subKernelResult_${this.subKernels[i].name}[1]`
           );
         }
         break;
@@ -1380,7 +1435,7 @@ float integerCorrectionModulo(float number, float divisor) {
           result.push(
             `  gl_FragData[${i + 1}][0] = subKernelResult_${this.subKernels[i].name}[0]`,
             `  gl_FragData[${i + 1}][1] = subKernelResult_${this.subKernels[i].name}[1]`,
-            `  gl_FragData[${i + 1}][2] = subKernelResult_${this.subKernels[i].name}[2]`,
+            `  gl_FragData[${i + 1}][2] = subKernelResult_${this.subKernels[i].name}[2]`
           );
         }
         break;
@@ -1390,7 +1445,7 @@ float integerCorrectionModulo(float number, float divisor) {
             `  gl_FragData[${i + 1}][0] = subKernelResult_${this.subKernels[i].name}[0]`,
             `  gl_FragData[${i + 1}][1] = subKernelResult_${this.subKernels[i].name}[1]`,
             `  gl_FragData[${i + 1}][2] = subKernelResult_${this.subKernels[i].name}[2]`,
-            `  gl_FragData[${i + 1}][3] = subKernelResult_${this.subKernels[i].name}[3]`,
+            `  gl_FragData[${i + 1}][3] = subKernelResult_${this.subKernels[i].name}[3]`
           );
         }
         break;
@@ -1450,11 +1505,19 @@ float integerCorrectionModulo(float number, float divisor) {
   }
 
   destroy(removeCanvasReferences) {
+    if (!this.context) return;
     if (this.buffer) {
       this.context.deleteBuffer(this.buffer);
     }
     if (this.framebuffer) {
       this.context.deleteFramebuffer(this.framebuffer);
+    }
+    for (const width in this.rawValueFramebuffers) {
+      for (const height in this.rawValueFramebuffers[width]) {
+        this.context.deleteFramebuffer(this.rawValueFramebuffers[width][height]);
+        delete this.rawValueFramebuffers[width][height];
+      }
+      delete this.rawValueFramebuffers[width];
     }
     if (this.vertShader) {
       this.context.deleteShader(this.vertShader);
@@ -1508,6 +1571,10 @@ float integerCorrectionModulo(float number, float divisor) {
     this.destroyExtensions();
     delete this.context;
     delete this.canvas;
+    if (!this.gpu) return;
+    const i = this.gpu.kernels.indexOf(this);
+    if (i === -1) return;
+    this.gpu.kernels.splice(i, 1);
   }
 
   destroyExtensions() {

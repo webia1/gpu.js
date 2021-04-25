@@ -663,7 +663,7 @@ const utils = {
           }
           case 'VariableDeclarator':
             if (ast.init.object && ast.init.object.type === 'ThisExpression') {
-              const lookup = thisLookup(ast.init.property.name);
+              const lookup = thisLookup(ast.init.property.name, true);
               if (lookup) {
                 return `${ast.id.name} = ${flatten(ast.init)}`;
               } else {
@@ -763,7 +763,7 @@ const utils = {
         if (!flattened[functionDependency]) {
           flattened[functionDependency] = true;
         }
-        flattenedFunctionDependencies.push(utils.flattenFunctionToString(functionDependency, settings) + '\n');
+        functionDependency ? flattenedFunctionDependencies.push(utils.flattenFunctionToString(functionDependency, settings) + '\n') : '';
       }
       return flattenedFunctionDependencies.join('') + result;
     }

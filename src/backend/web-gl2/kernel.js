@@ -71,6 +71,7 @@ class WebGL2Kernel extends WebGLKernel {
     return Object.freeze({
       isFloatRead: this.getIsFloatRead(),
       isIntegerDivisionAccurate: this.getIsIntegerDivisionAccurate(),
+      isSpeedTacticSupported: this.getIsSpeedTacticSupported(),
       kernelMap: true,
       isTextureFloat: true,
       isDrawBuffers: true,
@@ -87,10 +88,6 @@ class WebGL2Kernel extends WebGLKernel {
 
   static getIsTextureFloat() {
     return true;
-  }
-
-  static getIsIntegerDivisionAccurate() {
-    return super.getIsIntegerDivisionAccurate();
   }
 
   static getChannelCount() {
@@ -251,7 +248,7 @@ class WebGL2Kernel extends WebGLKernel {
     }
   }
   getInternalFormat() {
-    const { context: gl, optimizeFloatMemory, pipeline, precision } = this;
+    const { context: gl } = this;
 
     if (this.precision === 'single') {
       if (this.pipeline) {
@@ -279,14 +276,15 @@ class WebGL2Kernel extends WebGLKernel {
   }
 
   _setupOutputTexture() {
-    const { context: gl } = this;
+    const gl = this.context;
     if (this.texture) {
-      this.texture.beforeMutate();
+      // here we inherit from an already existing kernel, so go ahead and just bind textures to the framebuffer
       gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, this.texture.texture, 0);
       return;
     }
+    gl.bindFramebuffer(gl.FRAMEBUFFER, this.framebuffer);
     const texture = gl.createTexture();
-    const { texSize } = this;
+    const texSize = this.texSize;
     gl.activeTexture(gl.TEXTURE0 + this.constantTextureCount + this.argumentTextureCount);
     gl.bindTexture(gl.TEXTURE_2D, texture);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.REPEAT);
@@ -313,16 +311,15 @@ class WebGL2Kernel extends WebGLKernel {
   }
 
   _setupSubOutputTextures() {
-    const { context: gl } = this;
-    if (this.mappedTextures && this.mappedTextures.length > 0) {
-      for (let i = 0; i < this.mappedTextures.length; i++) {
-        const mappedTexture = this.mappedTextures[i];
-        mappedTexture.beforeMutate();
-        gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0 + i + 1, gl.TEXTURE_2D, mappedTexture.texture, 0);
+    const gl = this.context;
+    if (this.mappedTextures) {
+      // here we inherit from an already existing kernel, so go ahead and just bind textures to the framebuffer
+      for (let i = 0; i < this.subKernels.length; i++) {
+        gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0 + i + 1, gl.TEXTURE_2D, this.mappedTextures[i].texture, 0);
       }
       return;
     }
-    const { texSize } = this;
+    const texSize = this.texSize;
     this.drawBuffersMap = [gl.COLOR_ATTACHMENT0];
     this.mappedTextures = [];
     for (let i = 0; i < this.subKernels.length; i++) {
@@ -512,7 +509,7 @@ class WebGL2Kernel extends WebGLKernel {
     result.push(
       '  threadId = indexTo3D(index, uOutputDim)',
       '  kernel()',
-      `  data0.${channel} = kernelResult`,
+      `  data0.${channel} = kernelResult`
     );
   }
 
@@ -522,11 +519,11 @@ class WebGL2Kernel extends WebGLKernel {
       const subKernel = this.subKernels[i];
       if (subKernel.returnType === 'Integer') {
         result.push(
-          `  data${i + 1}.${channel} = float(subKernelResult_${subKernel.name})`,
+          `  data${i + 1}.${channel} = float(subKernelResult_${subKernel.name})`
         );
       } else {
         result.push(
-          `  data${i + 1}.${channel} = subKernelResult_${subKernel.name}`,
+          `  data${i + 1}.${channel} = subKernelResult_${subKernel.name}`
         );
       }
     }
@@ -547,11 +544,11 @@ class WebGL2Kernel extends WebGLKernel {
       const subKernel = this.subKernels[i];
       if (subKernel.returnType === 'Integer') {
         result.push(
-          `  data${i + 1}[0] = float(subKernelResult_${subKernel.name})`,
+          `  data${i + 1}[0] = float(subKernelResult_${subKernel.name})`
         );
       } else {
         result.push(
-          `  data${i + 1}[0] = subKernelResult_${subKernel.name}`,
+          `  data${i + 1}[0] = subKernelResult_${subKernel.name}`
         );
       }
     }
@@ -574,7 +571,7 @@ class WebGL2Kernel extends WebGLKernel {
       const subKernel = this.subKernels[i];
       result.push(
         `  data${i + 1}[0] = subKernelResult_${subKernel.name}[0]`,
-        `  data${i + 1}[1] = subKernelResult_${subKernel.name}[1]`,
+        `  data${i + 1}[1] = subKernelResult_${subKernel.name}[1]`
       );
     }
     return result;
@@ -598,7 +595,7 @@ class WebGL2Kernel extends WebGLKernel {
       result.push(
         `  data${i + 1}[0] = subKernelResult_${subKernel.name}[0]`,
         `  data${i + 1}[1] = subKernelResult_${subKernel.name}[1]`,
-        `  data${i + 1}[2] = subKernelResult_${subKernel.name}[2]`,
+        `  data${i + 1}[2] = subKernelResult_${subKernel.name}[2]`
       );
     }
     return result;
@@ -617,7 +614,7 @@ class WebGL2Kernel extends WebGLKernel {
     if (!this.subKernels) return result;
     for (let i = 0; i < this.subKernels.length; ++i) {
       result.push(
-        `  data${i + 1} = subKernelResult_${this.subKernels[i].name}`,
+        `  data${i + 1} = subKernelResult_${this.subKernels[i].name}`
       );
     }
     return result;

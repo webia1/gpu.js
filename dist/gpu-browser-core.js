@@ -4,13 +4,13 @@
  *
  * GPU Accelerated JavaScript
  *
- * @version 2.6.6
- * @date Fri Jan 24 2020 10:39:16 GMT-0500 (Eastern Standard Time)
+ * @version 2.11.0
+ * @date Tue Jan 05 2021 15:55:59 GMT-0500 (Eastern Standard Time)
  *
  * @license MIT
  * The MIT License
  *
- * Copyright (c) 2020 gpu.js Team
+ * Copyright (c) 2021 gpu.js Team
  */(function(f){if(typeof exports==="object"&&typeof module!=="undefined"){module.exports=f()}else if(typeof define==="function"&&define.amd){define([],f)}else{var g;if(typeof window!=="undefined"){g=window}else if(typeof global!=="undefined"){g=global}else if(typeof self!=="undefined"){g=self}else{g=this}g.GPU = f()}})(function(){var define,module,exports;return (function(){function r(e,n,t){function o(i,f){if(!n[i]){if(!e[i]){var c="function"==typeof require&&require;if(!f&&c)return c(i,!0);if(u)return u(i,!0);var a=new Error("Cannot find module '"+i+"'");throw a.code="MODULE_NOT_FOUND",a}var p=n[i]={exports:{}};e[i][0].call(p.exports,function(r){var n=e[i][1][r];return o(n||r)},p,p.exports,r,e,n,t)}return n[i].exports}for(var u="function"==typeof require&&require,i=0;i<t.length;i++)o(t[i]);return o}return r})()({1:[function(require,module,exports){
 
 },{}],2:[function(require,module,exports){
@@ -1020,18 +1020,6 @@ class CPUFunctionNode extends FunctionNode {
             return retArr;
         }
         break;
-      case 'value.value[]': 
-        if (this.removeIstanbulCoverage) {
-          return retArr;
-        }
-        retArr.push(`${mNode.object.object.name}.${mNode.object.property.name}[${mNode.property.value}]`);
-        return retArr;
-      case 'value.value[][]': 
-        if (this.removeIstanbulCoverage) {
-          return retArr;
-        }
-        retArr.push(`${mNode.object.object.object.name}.${mNode.object.object.property.name}[${mNode.object.property.value}][${mNode.property.value}]`);
-        return retArr;
       case 'this.constants.value':
       case 'this.constants.value[]':
       case 'this.constants.value[][]':
@@ -1039,6 +1027,15 @@ class CPUFunctionNode extends FunctionNode {
         break;
       case 'fn()[]':
         this.astGeneric(mNode.object, retArr);
+        retArr.push('[');
+        this.astGeneric(mNode.property, retArr);
+        retArr.push(']');
+        return retArr;
+      case 'fn()[][]':
+        this.astGeneric(mNode.object.object, retArr);
+        retArr.push('[');
+        this.astGeneric(mNode.object.property, retArr);
+        retArr.push(']');
         retArr.push('[');
         this.astGeneric(mNode.property, retArr);
         retArr.push(']');
@@ -1064,6 +1061,9 @@ class CPUFunctionNode extends FunctionNode {
       case 'Array(2)':
       case 'Array(3)':
       case 'Array(4)':
+      case 'Matrix(2)':
+      case 'Matrix(3)':
+      case 'Matrix(4)':
       case 'HTMLImageArray':
       case 'ArrayTexture(1)':
       case 'ArrayTexture(2)':
@@ -1165,18 +1165,23 @@ class CPUFunctionNode extends FunctionNode {
   }
 
   astArrayExpression(arrNode, retArr) {
+    const returnType = this.getType(arrNode);
     const arrLen = arrNode.elements.length;
-
-    retArr.push('new Float32Array([');
+    const elements = [];
     for (let i = 0; i < arrLen; ++i) {
-      if (i > 0) {
-        retArr.push(', ');
-      }
-      const subNode = arrNode.elements[i];
-      this.astGeneric(subNode, retArr)
+      const element = [];
+      this.astGeneric(arrNode.elements[i], element);
+      elements.push(element.join(''));
     }
-    retArr.push('])');
-
+    switch (returnType) {
+      case 'Matrix(2)':
+      case 'Matrix(3)':
+      case 'Matrix(4)':
+        retArr.push(`[${elements.join(', ')}]`);
+        break;
+      default:
+        retArr.push(`new Float32Array([${elements.join(', ')}])`);
+    }
     return retArr;
   }
 
@@ -1208,6 +1213,9 @@ function constantsToString(constants, types) {
       case 'Array(2)':
       case 'Array(3)':
       case 'Array(4)':
+      case 'Matrix(2)':
+      case 'Matrix(3)':
+      case 'Matrix(4)':
         results.push(`${name}:new ${constant.constructor.name}(${JSON.stringify(Array.from(constant))})`);
         break;
     }
@@ -1347,6 +1355,9 @@ ${ header.join('\n') }
       case 'Array(2)':
       case 'Array(3)':
       case 'Array(4)':
+      case 'Matrix(2)':
+      case 'Matrix(3)':
+      case 'Matrix(4)':
         if (incomingConstants.hasOwnProperty(p)) {
           console.warn('constant ' + p + ' of type ' + type + ' cannot be resigned');
         }
@@ -1490,6 +1501,7 @@ class CPUKernel extends Kernel {
   }
 
   build() {
+    if (this.built) return;
     this.setupConstants();
     this.setupArguments(arguments);
     this.validateSettings(arguments);
@@ -1571,9 +1583,11 @@ class CPUKernel extends Kernel {
     return this._kernelString = `  const LOOP_MAX = ${ this._getLoopMaxString() };
   ${ this.injectedNative || '' }
   const _this = this;
+  ${ this._resultKernelHeader() }
   ${ this._processConstants() }
   return (${ this.argumentNames.map(argumentName => 'user_' + argumentName).join(', ') }) => {
     ${ this._prependedString.join('') }
+    ${ this._earlyThrows() }
     ${ this._processArguments() }
     ${ this.graphical ? this._graphicalKernelBody(kernelThreadString) : this._resultKernelBody(kernelThreadString) }
     ${ translatedSources.length > 0 ? translatedSources.join('\n') : '' }
@@ -1615,6 +1629,26 @@ class CPUKernel extends Kernel {
       }
     }
     return result.join('');
+  }
+
+  _earlyThrows() {
+    if (this.graphical) return '';
+    if (this.immutable) return '';
+    if (!this.pipeline) return '';
+    const arrayArguments = [];
+    for (let i = 0; i < this.argumentTypes.length; i++) {
+      if (this.argumentTypes[i] === 'Array') {
+        arrayArguments.push(this.argumentNames[i]);
+      }
+    }
+    if (arrayArguments.length === 0) return '';
+    const checks = [];
+    for (let i = 0; i < arrayArguments.length; i++) {
+      const argumentName = arrayArguments[i];
+      const checkSubKernels = this._mapSubKernels(subKernel => `user_${argumentName} === result_${subKernel.name}`).join(' || ');
+      checks.push(`user_${argumentName} === result${checkSubKernels ? ` || ${checkSubKernels}` : ''}`);
+    }
+    return `if (${checks.join(' || ')}) throw new Error('Source and destination arrays are the same.  Use immutable = true');`;
   }
 
   _processArguments() {
@@ -1702,14 +1736,28 @@ class CPUKernel extends Kernel {
     return imagesArray;
   }
 
+  _resultKernelHeader() {
+    if (this.graphical) return '';
+    if (this.immutable) return '';
+    if (!this.pipeline) return '';
+    switch (this.output.length) {
+      case 1:
+        return this._mutableKernel1DResults();
+      case 2:
+        return this._mutableKernel2DResults();
+      case 3:
+        return this._mutableKernel3DResults();
+    }
+  }
+
   _resultKernelBody(kernelString) {
     switch (this.output.length) {
       case 1:
-        return this._resultKernel1DLoop(kernelString) + this._kernelOutput();
+        return (!this.immutable && this.pipeline ? this._resultMutableKernel1DLoop(kernelString) : this._resultImmutableKernel1DLoop(kernelString)) + this._kernelOutput();
       case 2:
-        return this._resultKernel2DLoop(kernelString) + this._kernelOutput();
+        return (!this.immutable && this.pipeline ? this._resultMutableKernel2DLoop(kernelString) : this._resultImmutableKernel2DLoop(kernelString)) + this._kernelOutput();
       case 3:
-        return this._resultKernel3DLoop(kernelString) + this._kernelOutput();
+        return (!this.immutable && this.pipeline ? this._resultMutableKernel3DLoop(kernelString) : this._resultImmutableKernel3DLoop(kernelString)) + this._kernelOutput();
       default:
         throw new Error('unsupported size kernel');
     }
@@ -1750,7 +1798,7 @@ class CPUKernel extends Kernel {
     }
   }
 
-  _resultKernel1DLoop(kernelString) {
+  _resultImmutableKernel1DLoop(kernelString) {
     const constructorString = this._getKernelResultTypeConstructorString();
     return `  const outputX = _this.output[0];
     const result = new ${constructorString}(outputX);
@@ -1764,7 +1812,25 @@ class CPUKernel extends Kernel {
     }`;
   }
 
-  _resultKernel2DLoop(kernelString) {
+  _mutableKernel1DResults() {
+    const constructorString = this._getKernelResultTypeConstructorString();
+    return `  const outputX = _this.output[0];
+    const result = new ${constructorString}(outputX);
+    ${ this._mapSubKernels(subKernel => `const result_${ subKernel.name } = new ${constructorString}(outputX);\n`).join('    ') }
+    ${ this._mapSubKernels(subKernel => `let subKernelResult_${ subKernel.name };\n`).join('    ') }`;
+  }
+
+  _resultMutableKernel1DLoop(kernelString) {
+    return `  const outputX = _this.output[0];
+    for (let x = 0; x < outputX; x++) {
+      this.thread.x = x;
+      this.thread.y = 0;
+      this.thread.z = 0;
+      ${ kernelString }
+    }`;
+  }
+
+  _resultImmutableKernel2DLoop(kernelString) {
     const constructorString = this._getKernelResultTypeConstructorString();
     return `  const outputX = _this.output[0];
     const outputY = _this.output[1];
@@ -1783,15 +1849,27 @@ class CPUKernel extends Kernel {
     }`;
   }
 
-  _graphicalKernel2DLoop(kernelString) {
+  _mutableKernel2DResults() {
     const constructorString = this._getKernelResultTypeConstructorString();
     return `  const outputX = _this.output[0];
     const outputY = _this.output[1];
+    const result = new Array(outputY);
     ${ this._mapSubKernels(subKernel => `const result_${ subKernel.name } = new Array(outputY);\n`).join('    ') }
     ${ this._mapSubKernels(subKernel => `let subKernelResult_${ subKernel.name };\n`).join('    ') }
     for (let y = 0; y < outputY; y++) {
+      const resultX = result[y] = new ${constructorString}(outputX);
+      ${ this._mapSubKernels(subKernel => `const resultX_${ subKernel.name } = result_${subKernel.name}[y] = new ${constructorString}(outputX);\n`).join('') }
+    }`;
+  }
+
+  _resultMutableKernel2DLoop(kernelString) {
+    const constructorString = this._getKernelResultTypeConstructorString();
+    return `  const outputX = _this.output[0];
+    const outputY = _this.output[1];
+    for (let y = 0; y < outputY; y++) {
       this.thread.z = 0;
       this.thread.y = y;
+      const resultX = result[y];
       ${ this._mapSubKernels(subKernel => `const resultX_${ subKernel.name } = result_${subKernel.name}[y] = new ${constructorString}(outputX);\n`).join('') }
       for (let x = 0; x < outputX; x++) {
         this.thread.x = x;
@@ -1800,7 +1878,20 @@ class CPUKernel extends Kernel {
     }`;
   }
 
-  _resultKernel3DLoop(kernelString) {
+  _graphicalKernel2DLoop(kernelString) {
+    return `  const outputX = _this.output[0];
+    const outputY = _this.output[1];
+    for (let y = 0; y < outputY; y++) {
+      this.thread.z = 0;
+      this.thread.y = y;
+      for (let x = 0; x < outputX; x++) {
+        this.thread.x = x;
+        ${ kernelString }
+      }
+    }`;
+  }
+
+  _resultImmutableKernel3DLoop(kernelString) {
     const constructorString = this._getKernelResultTypeConstructorString();
     return `  const outputX = _this.output[0];
     const outputY = _this.output[1];
@@ -1816,6 +1907,42 @@ class CPUKernel extends Kernel {
         this.thread.y = y;
         const resultX = resultY[y] = new ${constructorString}(outputX);
         ${ this._mapSubKernels(subKernel => `const resultX_${ subKernel.name } = resultY_${subKernel.name}[y] = new ${constructorString}(outputX);\n`).join('        ') }
+        for (let x = 0; x < outputX; x++) {
+          this.thread.x = x;
+          ${ kernelString }
+        }
+      }
+    }`;
+  }
+
+  _mutableKernel3DResults() {
+    const constructorString = this._getKernelResultTypeConstructorString();
+    return `  const outputX = _this.output[0];
+    const outputY = _this.output[1];
+    const outputZ = _this.output[2];
+    const result = new Array(outputZ);
+    ${ this._mapSubKernels(subKernel => `const result_${ subKernel.name } = new Array(outputZ);\n`).join('    ') }
+    ${ this._mapSubKernels(subKernel => `let subKernelResult_${ subKernel.name };\n`).join('    ') }
+    for (let z = 0; z < outputZ; z++) {
+      const resultY = result[z] = new Array(outputY);
+      ${ this._mapSubKernels(subKernel => `const resultY_${ subKernel.name } = result_${subKernel.name}[z] = new Array(outputY);\n`).join('      ') }
+      for (let y = 0; y < outputY; y++) {
+        const resultX = resultY[y] = new ${constructorString}(outputX);
+        ${ this._mapSubKernels(subKernel => `const resultX_${ subKernel.name } = resultY_${subKernel.name}[y] = new ${constructorString}(outputX);\n`).join('        ') }
+      }
+    }`;
+  }
+
+  _resultMutableKernel3DLoop(kernelString) {
+    return `  const outputX = _this.output[0];
+    const outputY = _this.output[1];
+    const outputZ = _this.output[2];
+    for (let z = 0; z < outputZ; z++) {
+      this.thread.z = z;
+      const resultY = result[z];
+      for (let y = 0; y < outputY; y++) {
+        this.thread.y = y;
+        const resultX = resultY[y];
         for (let x = 0; x < outputX; x++) {
           this.thread.x = x;
           ${ kernelString }
@@ -1900,8 +2027,6 @@ class FunctionBuilder {
       followingReturnStatement,
       dynamicArguments,
       dynamicOutput,
-      onIstanbulCoverageVariable,
-      removeIstanbulCoverage,
     } = kernel;
 
     const argumentTypes = new Array(kernelArguments.length);
@@ -1952,12 +2077,12 @@ class FunctionBuilder {
       functionBuilder.trackFunctionCall(functionName, calleeFunctionName, args);
     };
 
-    const onNestedFunction = (ast, returnType) => {
+    const onNestedFunction = (ast, source) => {
       const argumentNames = [];
       for (let i = 0; i < ast.params.length; i++) {
         argumentNames.push(ast.params[i].name);
       }
-      const nestedFunction = new FunctionNode(null, Object.assign({}, nodeOptions, {
+      const nestedFunction = new FunctionNode(source, Object.assign({}, nodeOptions, {
         returnType: null,
         ast,
         name: ast.id.name,
@@ -1988,8 +2113,6 @@ class FunctionBuilder {
       triggerImplyArgumentType,
       triggerImplyArgumentBitRatio,
       onFunctionCall,
-      onIstanbulCoverageVariable: onIstanbulCoverageVariable ? (name) => onIstanbulCoverageVariable(name, kernel) : null,
-      removeIstanbulCoverage,
       optimizeFloatMemory,
       precision,
       constants,
@@ -2042,8 +2165,6 @@ class FunctionBuilder {
         triggerImplyArgumentBitRatio,
         onFunctionCall,
         onNestedFunction,
-        onIstanbulCoverageVariable: onIstanbulCoverageVariable ? (name) => onIstanbulCoverageVariable(name, kernel) : null,
-        removeIstanbulCoverage,
       }));
     }
 
@@ -2120,8 +2241,12 @@ class FunctionBuilder {
     retList = retList || [];
 
     if (this.nativeFunctionNames.indexOf(functionName) > -1) {
-      if (retList.indexOf(functionName) === -1) {
+      const nativeFunctionIndex = retList.indexOf(functionName);
+      if (nativeFunctionIndex === -1) {
         retList.push(functionName);
+      } else {
+        const dependantNativeFunctionName = retList.splice(nativeFunctionIndex, 1)[0];
+        retList.push(dependantNativeFunctionName);
       }
       return retList;
     }
@@ -2465,8 +2590,6 @@ class FunctionNode {
     this.dynamicArguments = null;
     this.strictTypingChecking = false;
     this.fixIntegerDivisionAccuracy = null;
-    this.onIstanbulCoverageVariable = null;
-    this.removeIstanbulCoverage = false;
 
     if (settings) {
       for (const p in settings) {
@@ -2542,7 +2665,7 @@ class FunctionNode {
 
     if (ast.type === 'MemberExpression') {
       if (ast.object && ast.property) {
-        if (ast.object.hasOwnProperty('name') && ast.object.name[0] === '_') {
+        if (ast.object.hasOwnProperty('name') && ast.object.name !== 'Math') {
           return this.astMemberExpressionUnroll(ast.property);
         }
 
@@ -2633,7 +2756,7 @@ class FunctionNode {
     }
 
     for (let i = 0; i < functions.length; i++) {
-      this.onNestedFunction(functions[i]);
+      this.onNestedFunction(functions[i], this.source);
     }
   }
 
@@ -2727,6 +2850,13 @@ class FunctionNode {
       case 'BlockStatement':
         return this.getType(ast.body);
       case 'ArrayExpression':
+        const childType = this.getType(ast.elements[0]);
+        switch (childType) {
+          case 'Array(2)':
+          case 'Array(3)':
+          case 'Array(4)':
+            return `Matrix(${ast.elements.length})`;
+        }
         return `Array(${ ast.elements.length })`;
       case 'Literal':
         const literalKey = this.astKey(ast);
@@ -2754,6 +2884,11 @@ class FunctionNode {
             }
             if (this.getVariableSignature(ast.callee, true) === 'this.color') {
               return null;
+            }
+            if (ast.callee.type === 'MemberExpression' && ast.callee.object && ast.callee.property && ast.callee.property.name && ast.arguments) {
+              const functionName = ast.callee.property.name;
+              this.inferArgumentTypesIfNeeded(functionName, ast.arguments);
+              return this.lookupReturnType(functionName, ast, this);
             }
             throw this.astErrorOutput('Unknown call expression', ast);
           }
@@ -2836,11 +2971,7 @@ class FunctionNode {
           if (this.isAstVariable(ast)) {
             const signature = this.getVariableSignature(ast);
             if (signature === 'value') {
-              const type = this.getVariableType(ast);
-              if (!type) {
-                throw this.astErrorOutput(`Unable to find identifier valueType`, ast);
-              }
-              return type;
+              return this.getCheckVariableType(ast);
             }
           }
           const origin = this.findIdentifierOrigin(ast);
@@ -2866,13 +2997,13 @@ class FunctionNode {
             const variableSignature = this.getVariableSignature(ast);
             switch (variableSignature) {
               case 'value[]':
-                return this.getLookupType(this.getVariableType(ast.object));
+                return this.getLookupType(this.getCheckVariableType(ast.object));
               case 'value[][]':
-                return this.getLookupType(this.getVariableType(ast.object.object));
+                return this.getLookupType(this.getCheckVariableType(ast.object.object));
               case 'value[][][]':
-                return this.getLookupType(this.getVariableType(ast.object.object.object));
+                return this.getLookupType(this.getCheckVariableType(ast.object.object.object));
               case 'value[][][][]':
-                return this.getLookupType(this.getVariableType(ast.object.object.object.object));
+                return this.getLookupType(this.getCheckVariableType(ast.object.object.object.object));
               case 'value.thread.value':
               case 'this.thread.value':
                 return 'Integer';
@@ -2889,9 +3020,7 @@ class FunctionNode {
               case 'this.constants.value[][][][]':
                 return this.getLookupType(this.getConstantType(ast.object.object.object.object.property.name));
               case 'fn()[]':
-                return this.getLookupType(this.getType(ast.object));
               case 'fn()[][]':
-                return this.getLookupType(this.getType(ast.object));
               case 'fn()[][][]':
                 return this.getLookupType(this.getType(ast.object));
               case 'value.value':
@@ -2900,13 +3029,10 @@ class FunctionNode {
                 }
                 switch (ast.property.name) {
                   case 'r':
-                    return this.getLookupType(this.getVariableType(ast.object));
                   case 'g':
-                    return this.getLookupType(this.getVariableType(ast.object));
                   case 'b':
-                    return this.getLookupType(this.getVariableType(ast.object));
                   case 'a':
-                    return this.getLookupType(this.getVariableType(ast.object));
+                    return this.getLookupType(this.getCheckVariableType(ast.object));
                 }
                 case '[][]':
                   return 'Number';
@@ -2930,6 +3056,14 @@ class FunctionNode {
         default:
           throw this.astErrorOutput(`Unhandled getType Type "${ ast.type }"`, ast);
     }
+  }
+
+  getCheckVariableType(ast) {
+    const type = this.getVariableType(ast);
+    if (!type) {
+      throw this.astErrorOutput(`${ast.type} is not defined`, ast);
+    }
+    return type;
   }
 
   inferArgumentTypesIfNeeded(functionName, args) {
@@ -2966,15 +3100,26 @@ class FunctionNode {
     const mathFunctions = [
       'abs',
       'acos',
+      'acosh',
       'asin',
+      'asinh',
       'atan',
       'atan2',
+      'atanh',
+      'cbrt',
       'ceil',
+      'clz32',
       'cos',
+      'cosh',
+      'expm1',
       'exp',
       'floor',
+      'fround',
+      'imul',
       'log',
       'log2',
+      'log10',
+      'log1p',
       'max',
       'min',
       'pow',
@@ -2982,8 +3127,11 @@ class FunctionNode {
       'round',
       'sign',
       'sin',
+      'sinh',
       'sqrt',
       'tan',
+      'tanh',
+      'trunc',
     ];
     return ast.type === 'CallExpression' &&
       ast.callee &&
@@ -3182,8 +3330,6 @@ class FunctionNode {
       'value[][][]',
       'value[][][][]',
       'value.value',
-      'value.value[]', 
-      'value.value[][]', 
       'value.thread.value',
       'this.thread.value',
       'this.output.value',
@@ -3397,20 +3543,11 @@ class FunctionNode {
   astThisExpression(ast, retArr) {
     return retArr;
   }
-  isIstanbulAST(ast) {
-    const variableSignature = this.getVariableSignature(ast);
-    return variableSignature === 'value.value[]' || variableSignature === 'value.value[][]';
-  }
   astSequenceExpression(sNode, retArr) {
     const { expressions } = sNode;
     const sequenceResult = [];
     for (let i = 0; i < expressions.length; i++) {
       const expression = expressions[i];
-      if (this.removeIstanbulCoverage) {
-        if (expression.type === 'UpdateExpression' && this.isIstanbulAST(expression.argument)) {
-          continue;
-        }
-      }
       const expressionResult = [];
       this.astGeneric(expression, expressionResult);
       sequenceResult.push(expressionResult.join(''));
@@ -3442,12 +3579,6 @@ class FunctionNode {
   checkAndUpconvertBitwiseUnary(uNode, retArr) {}
 
   astUpdateExpression(uNode, retArr) {
-    if (this.removeIstanbulCoverage) {
-      const signature = this.getVariableSignature(uNode.argument);
-      if (this.isIstanbulAST(uNode.argument)) {
-        return retArr;
-      }
-    }
     if (uNode.prefix) {
       retArr.push(uNode.operator);
       this.astGeneric(uNode.argument, retArr);
@@ -3645,33 +3776,14 @@ class FunctionNode {
           };
         }
         case 'fn()[]':
+        case 'fn()[][]':
         case '[][]':
           return {
             signature: variableSignature,
               property: ast.property,
           };
-        case 'value.value[]': 
-          if (this.removeIstanbulCoverage) {
-            return { signature: variableSignature };
-          }
-          if (this.onIstanbulCoverageVariable) {
-            this.onIstanbulCoverageVariable(ast.object.object.name);
-            return {
-              signature: variableSignature
-            };
-          }
-          case 'value.value[][]': 
-            if (this.removeIstanbulCoverage) {
-              return { signature: variableSignature };
-            }
-            if (this.onIstanbulCoverageVariable) {
-              this.onIstanbulCoverageVariable(ast.object.object.object.name);
-              return {
-                signature: variableSignature
-              };
-            }
-            default:
-              throw this.astErrorOutput('Unexpected expression', ast);
+        default:
+          throw this.astErrorOutput('Unexpected expression', ast);
     }
   }
 
@@ -3754,6 +3866,9 @@ const typeLookupMap = {
   'Array(2)': 'Number',
   'Array(3)': 'Number',
   'Array(4)': 'Number',
+  'Matrix(2)': 'Number',
+  'Matrix(3)': 'Number',
+  'Matrix(4)': 'Number',
   'Array2D': 'Number',
   'Array3D': 'Number',
   'Input': 'Number',
@@ -3875,8 +3990,21 @@ class FunctionTracer {
   }
 
   getDeclaration(name) {
-    const { currentContext, currentFunctionContext } = this;
-    return currentContext[name] || currentFunctionContext[name] || null;
+    const { currentContext, currentFunctionContext, runningContexts } = this;
+    const declaration = currentContext[name] || currentFunctionContext[name] || null;
+
+    if (
+      !declaration &&
+      currentContext === currentFunctionContext &&
+      runningContexts.length > 0
+    ) {
+      const previousRunningContext = runningContexts[runningContexts.length - 2];
+      if (previousRunningContext[name]) {
+        return previousRunningContext[name];
+      }
+    }
+
+    return declaration;
   }
 
   scan(ast) {
@@ -4251,6 +4379,7 @@ function glKernelString(Kernel, args, originKernel, setupContextString, destroyC
   result.push(context.toString());
   if (kernel.renderOutput === kernel.renderTexture) {
     context.reset();
+    const framebufferName = context.getContextVariableName(kernel.framebuffer);
     if (kernel.renderKernels) {
       const results = kernel.renderKernels();
       const textureName = context.getContextVariableName(kernel.texture.texture);
@@ -4258,7 +4387,7 @@ function glKernelString(Kernel, args, originKernel, setupContextString, destroyC
       result: {
         texture: ${ textureName },
         type: '${ results.result.type }',
-        toArray: ${ getToArrayString(results.result, textureName) }
+        toArray: ${ getToArrayString(results.result, textureName, framebufferName) }
       },`);
       const { subKernels, mappedTextures } = kernel;
       for (let i = 0; i < subKernels.length; i++) {
@@ -4270,7 +4399,7 @@ function glKernelString(Kernel, args, originKernel, setupContextString, destroyC
       ${subKernel.property}: {
         texture: ${ subKernelTextureName },
         type: '${ subKernelResult.type }',
-        toArray: ${ getToArrayString(subKernelResult, subKernelTextureName) }
+        toArray: ${ getToArrayString(subKernelResult, subKernelTextureName, framebufferName) }
       },`);
       }
       result.push(`    };`);
@@ -4280,7 +4409,7 @@ function glKernelString(Kernel, args, originKernel, setupContextString, destroyC
       result.push(`    return {
         texture: ${ textureName },
         type: '${ rendered.type }',
-        toArray: ${ getToArrayString(rendered, textureName) }
+        toArray: ${ getToArrayString(rendered, textureName, framebufferName) }
       };`);
     }
   }
@@ -4295,7 +4424,7 @@ function glKernelString(Kernel, args, originKernel, setupContextString, destroyC
 
   let constantsUpload = [];
   kernelConstants.forEach((kernelConstant) => {
-    constantsUpload.push(`${  kernelConstant.getStringValueHandler()}`);
+    constantsUpload.push(`${kernelConstant.getStringValueHandler()}`);
   });
   return `function kernel(settings) {
   const { context, constants } = settings;
@@ -4339,7 +4468,7 @@ function getGetPixelsString(kernel) {
   });
 }
 
-function getToArrayString(kernelResult, textureName) {
+function getToArrayString(kernelResult, textureName, framebufferName) {
   const toArray = kernelResult.toArray.toString();
   const useFunctionKeyword = !/^function/.test(toArray);
   const flattenedFunctions = utils.flattenFunctionToString(`${useFunctionKeyword ? 'function ' : ''}${ toArray }`, {
@@ -4347,20 +4476,21 @@ function getToArrayString(kernelResult, textureName) {
       if (object === 'utils') {
         return `const ${name} = ${utils[name].toString()};`;
       } else if (object === 'this') {
+        if (name === 'framebuffer') {
+          return '';
+        }
         return `${useFunctionKeyword ? 'function ' : ''}${kernelResult[name].toString()}`;
       } else {
         throw new Error('unhandled fromObject');
       }
     },
-    thisLookup: (property) => {
+    thisLookup: (property, isDeclaration) => {
       if (property === 'texture') {
         return textureName;
       }
       if (property === 'context') {
-        return null;
-      }
-      if (property === '_framebuffer') {
-        return '_framebuffer';
+        if (isDeclaration) return null;
+        return 'gl';
       }
       if (kernelResult.hasOwnProperty(property)) {
         return JSON.stringify(kernelResult[property]);
@@ -4369,7 +4499,7 @@ function getToArrayString(kernelResult, textureName) {
     }
   });
   return `() => {
-  let _framebuffer;
+  function framebuffer() { return ${framebufferName}; };
   ${flattenedFunctions}
   return toArray();
   }`;
@@ -4484,6 +4614,29 @@ class GLKernel extends Kernel {
     return result[0] === 2 && result[1] === 1511;
   }
 
+  static getIsSpeedTacticSupported() {
+    function kernelFunction(value) {
+      return value[this.thread.x];
+    }
+    const kernel = new this(kernelFunction.toString(), {
+      context: this.testContext,
+      canvas: this.testCanvas,
+      validate: false,
+      output: [4],
+      returnType: 'Number',
+      precision: 'unsigned',
+      tactic: 'speed',
+    });
+    const args = [
+      [0, 1, 2, 3]
+    ];
+    kernel.build.apply(kernel, args);
+    kernel.run.apply(kernel, args);
+    const result = kernel.renderOutput();
+    kernel.destroy(true);
+    return Math.round(result[0]) === 0 && Math.round(result[1]) === 1 && Math.round(result[2]) === 2 && Math.round(result[3]) === 3;
+  }
+
   static get testCanvas() {
     throw new Error(`"testCanvas" not defined on ${ this.name }`);
   }
@@ -4498,6 +4651,7 @@ class GLKernel extends Kernel {
     return Object.freeze({
       isFloatRead: this.getIsFloatRead(),
       isIntegerDivisionAccurate: this.getIsIntegerDivisionAccurate(),
+      isSpeedTacticSupported: this.getIsSpeedTacticSupported(),
       isTextureFloat: this.getIsTextureFloat(),
       isDrawBuffers,
       kernelMap: isDrawBuffers,
@@ -4690,6 +4844,8 @@ class GLKernel extends Kernel {
     this.compiledFragmentShader = null;
     this.compiledVertexShader = null;
     this.switchingKernels = null;
+    this._textureSwitched = null;
+    this._mappedTextureSwitched = null;
   }
 
   checkTextureSize() {
@@ -5093,7 +5249,7 @@ class GLKernel extends Kernel {
   }
 
   renderTexture() {
-    return this.texture.clone();
+    return this.immutable ? this.texture.clone() : this.texture;
   }
   readPackedPixelsToUint8Array() {
     if (this.precision !== 'unsigned') throw new Error('Requires this.precision to be "unsigned"');
@@ -5148,8 +5304,14 @@ class GLKernel extends Kernel {
     const result = {
       result: this.renderOutput(),
     };
-    for (let i = 0; i < this.subKernels.length; i++) {
-      result[this.subKernels[i].property] = this.mappedTextures[i].clone();
+    if (this.immutable) {
+      for (let i = 0; i < this.subKernels.length; i++) {
+        result[this.subKernels[i].property] = this.mappedTextures[i].clone();
+      }
+    } else {
+      for (let i = 0; i < this.subKernels.length; i++) {
+        result[this.subKernels[i].property] = this.mappedTextures[i];
+      }
     }
     return result;
   }
@@ -5202,12 +5364,14 @@ class GLKernel extends Kernel {
         this.texture.delete();
       }
       this.texture = null;
-      if (this.mappedTextures) {
+      this._setupOutputTexture();
+      if (this.mappedTextures && this.mappedTextures.length > 0) {
         for (let i = 0; i < this.mappedTextures.length; i++) {
           this.mappedTextures[i].delete();
         }
+        this.mappedTextures = null;
+        this._setupSubOutputTextures();
       }
-      this.mappedTextures = null;
     } else {
       this.output = newOutput;
     }
@@ -5230,6 +5394,7 @@ class GLKernel extends Kernel {
   }
   getVariablePrecisionString(textureSize = this.texSize, tactic = this.tactic, isInt = false) {
     if (!tactic) {
+      if (!this.constructor.features.isSpeedTacticSupported) return 'highp';
       const low = this.constructor.features[isInt ? 'lowIntPrecision' : 'lowFloatPrecision'];
       const medium = this.constructor.features[isInt ? 'mediumIntPrecision' : 'mediumFloatPrecision'];
       const high = this.constructor.features[isInt ? 'highIntPrecision' : 'highFloatPrecision'];
@@ -5257,12 +5422,14 @@ class GLKernel extends Kernel {
   }
 
   updateTextureArgumentRefs(kernelValue, arg) {
+    if (!this.immutable) return;
     if (this.texture.texture === arg.texture) {
       const { prevArg } = kernelValue;
       if (prevArg) {
         if (prevArg.texture._refs === 1) {
           this.texture.delete();
           this.texture = prevArg.clone();
+          this._textureSwitched = true;
         }
         prevArg.delete();
       }
@@ -5277,6 +5444,7 @@ class GLKernel extends Kernel {
             if (prevArg.texture._refs === 1) {
               mappedTexture.delete();
               mappedTextures[i] = prevArg.clone();
+              this._mappedTextureSwitched[i] = true;
             }
             prevArg.delete();
           }
@@ -5284,6 +5452,17 @@ class GLKernel extends Kernel {
           return;
         }
       }
+    }
+  }
+
+  onActivate(previousKernel) {
+    this._textureSwitched = true;
+    this.texture = previousKernel.texture;
+    if (this.mappedTextures) {
+      for (let i = 0; i < this.mappedTextures.length; i++) {
+        this._mappedTextureSwitched[i] = true;
+      }
+      this.mappedTextures = previousKernel.mappedTextures;
     }
   }
 
@@ -5501,11 +5680,9 @@ class GLTextureFloat extends GLTexture {
     this.type = 'ArrayTexture(1)';
   }
   renderRawOutput() {
-    const { context: gl, size } = this;
-    if (!this._framebuffer) {
-      this._framebuffer = gl.createFramebuffer();
-    }
-    gl.bindFramebuffer(gl.FRAMEBUFFER, this._framebuffer);
+    const gl = this.context;
+    const size = this.size;
+    gl.bindFramebuffer(gl.FRAMEBUFFER, this.framebuffer());
     gl.framebufferTexture2D(
       gl.FRAMEBUFFER,
       gl.COLOR_ATTACHMENT0,
@@ -5559,8 +5736,10 @@ class GLTexture extends Texture {
 
   beforeMutate() {
     if (this.texture._refs > 1) {
-      this.cloneTexture();
+      this.newTexture();
+      return true;
     }
+    return false;
   }
 
   cloneTexture() {
@@ -5569,13 +5748,7 @@ class GLTexture extends Texture {
     if (kernel.debug) {
       console.warn('cloning internal texture');
     }
-    const existingFramebuffer = gl.getParameter(gl.FRAMEBUFFER_BINDING);
-    if (!this._framebuffer) {
-      this._framebuffer = gl.createFramebuffer();
-    }
-    this._framebuffer.width = size[0];
-    this._framebuffer.height = size[1];
-    gl.bindFramebuffer(gl.FRAMEBUFFER, this._framebuffer);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, this.framebuffer());
     selectTexture(gl, texture);
     gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, texture, 0);
     const target = gl.createTexture();
@@ -5584,22 +5757,62 @@ class GLTexture extends Texture {
     gl.copyTexSubImage2D(gl.TEXTURE_2D, 0, 0, 0, 0, 0, size[0], size[1]);
     target._refs = 1;
     this.texture = target;
-    if (existingFramebuffer) {
-      gl.bindFramebuffer(gl.FRAMEBUFFER, existingFramebuffer);
+  }
+
+  newTexture() {
+    this.texture._refs--;
+    const gl = this.context;
+    const size = this.size;
+    const kernel = this.kernel;
+    if (kernel.debug) {
+      console.warn('new internal texture');
     }
+    const target = gl.createTexture();
+    selectTexture(gl, target);
+    gl.texImage2D(gl.TEXTURE_2D, 0, this.internalFormat, size[0], size[1], 0, this.textureFormat, this.textureType, null);
+    target._refs = 1;
+    this.texture = target;
+  }
+
+  clear() {
+    if (this.texture._refs) {
+      this.texture._refs--;
+      const gl = this.context;
+      const target = this.texture = gl.createTexture();
+      selectTexture(gl, target);
+      const size = this.size;
+      target._refs = 1;
+      gl.texImage2D(gl.TEXTURE_2D, 0, this.internalFormat, size[0], size[1], 0, this.textureFormat, this.textureType, null);
+    }
+    const { context: gl, texture } = this;
+    gl.bindFramebuffer(gl.FRAMEBUFFER, this.framebuffer());
+    gl.bindTexture(gl.TEXTURE_2D, texture);
+    selectTexture(gl, texture);
+    gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, texture, 0);
+    gl.clearColor(0, 0, 0, 0);
+    gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
   }
 
   delete() {
-    super.delete();
-    if (this.texture._refs === 0 && this._framebuffer) {
-      this.context.deleteFramebuffer(this._framebuffer);
-      this._framebuffer = null;
+    if (this._deleted) return;
+    this._deleted = true;
+    if (this.texture._refs) {
+      this.texture._refs--;
+      if (this.texture._refs) return;
     }
+    this.context.deleteTexture(this.texture);
+  }
+
+  framebuffer() {
+    if (!this._framebuffer) {
+      this._framebuffer = this.kernel.getRawValueFramebuffer(this.size[0], this.size[1]);
+    }
+    return this._framebuffer;
   }
 }
 
 function selectTexture(gl, texture) {
-  gl.activeTexture(gl.TEXTURE31); 
+  gl.activeTexture(gl.TEXTURE15);
   gl.bindTexture(gl.TEXTURE_2D, texture);
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
@@ -5707,8 +5920,7 @@ class GLTextureUnsigned extends GLTexture {
   }
   renderRawOutput() {
     const { context: gl } = this;
-    const framebuffer = gl.createFramebuffer();
-    gl.bindFramebuffer(gl.FRAMEBUFFER, framebuffer);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, this.framebuffer());
     gl.framebufferTexture2D(
       gl.FRAMEBUFFER,
       gl.COLOR_ATTACHMENT0,
@@ -5908,7 +6120,6 @@ class KernelValue {
     this.name = name;
     this.origin = origin;
     this.tactic = tactic;
-    this.id = `${this.origin}_${name}`;
     this.varName = origin === 'constants' ? `constants.${name}` : name;
     this.kernel = kernel;
     this.strictIntegers = strictIntegers;
@@ -5921,6 +6132,10 @@ class KernelValue {
     this.onRequestContextHandle = onRequestContextHandle;
     this.onUpdateValueMismatch = onUpdateValueMismatch;
     this.forceUploadEachRun = null;
+  }
+
+  get id() {
+    return `${this.origin}_${name}`;
   }
 
   getSource() {
@@ -6044,8 +6259,6 @@ class Kernel {
     this.optimizeFloatMemory = null;
     this.strictIntegers = false;
     this.fixIntegerDivisionAccuracy = null;
-    this.onIstanbulCoverageVariable = null;
-    this.removeIstanbulCoverage = false;
     this.built = false;
     this.signature = null;
   }
@@ -6071,11 +6284,6 @@ class Kernel {
             this.precision = 'unsigned';
           }
           this[p] = settings[p];
-          continue;
-        case 'removeIstanbulCoverage':
-          if (settings[p] !== null) {
-            this[p] = settings[p];
-          }
           continue;
         case 'nativeFunctions':
           if (!settings.nativeFunctions) continue;
@@ -6301,7 +6509,7 @@ class Kernel {
   }
 
   setImmutable(flag) {
-    utils.warnDeprecated('method', 'setImmutable');
+    this.immutable = flag;
     return this;
   }
 
@@ -6493,7 +6701,6 @@ class Kernel {
 
   static getSignature(kernel, argumentTypes) {
     throw new Error(`"getSignature" not implemented on ${ this.name }`);
-    return argumentTypes.length > 0 ? ':' + argumentTypes.join(',') : '';
   }
 
   functionToIGPUFunction(source, settings = {}) {
@@ -6517,6 +6724,8 @@ class Kernel {
       returnType: settings.returnType || null,
     };
   }
+
+  onActivate(previousKernel) {}
 }
 
 function splitArgumentTypes(argumentTypesObject) {
@@ -6545,11 +6754,86 @@ __CONSTANTS__;
 
 varying vec2 vTexCoord;
 
-vec4 round(vec4 x) {
+float acosh(float x) {
+  return log(x + sqrt(x * x - 1.0));
+}
+
+float sinh(float x) {
+  return (pow(${Math.E}, x) - pow(${Math.E}, -x)) / 2.0;
+}
+
+float asinh(float x) {
+  return log(x + sqrt(x * x + 1.0));
+}
+
+float atan2(float v1, float v2) {
+  if (v1 == 0.0 || v2 == 0.0) return 0.0;
+  return atan(v1 / v2);
+}
+
+float atanh(float x) {
+  x = (x + 1.0) / (x - 1.0);
+  if (x < 0.0) {
+    return 0.5 * log(-x);
+  }
+  return 0.5 * log(x);
+}
+
+float cbrt(float x) {
+  if (x >= 0.0) {
+    return pow(x, 1.0 / 3.0);
+  } else {
+    return -pow(x, 1.0 / 3.0);
+  }
+}
+
+float cosh(float x) {
+  return (pow(${Math.E}, x) + pow(${Math.E}, -x)) / 2.0; 
+}
+
+float expm1(float x) {
+  return pow(${Math.E}, x) - 1.0; 
+}
+
+float fround(highp float x) {
+  return x;
+}
+
+float imul(float v1, float v2) {
+  return float(int(v1) * int(v2));
+}
+
+float log10(float x) {
+  return log2(x) * (1.0 / log2(10.0));
+}
+
+float log1p(float x) {
+  return log(1.0 + x);
+}
+
+float _pow(float v1, float v2) {
+  if (v2 == 0.0) return 1.0;
+  return pow(v1, v2);
+}
+
+float tanh(float x) {
+  float e = exp(2.0 * x);
+  return (e - 1.0) / (e + 1.0);
+}
+
+float trunc(float x) {
+  if (x >= 0.0) {
+    return floor(x); 
+  } else {
+    return ceil(x);
+  }
+}
+
+vec4 _round(vec4 x) {
   return floor(x + 0.5);
 }
 
-float round(float x) {
+float _round(float x) {
   return floor(x + 0.5);
 }
 
@@ -6716,9 +7000,9 @@ float decode32(vec4 texel) {
   gte128.x = texel.b >= 128.0 ? 1.0 : 0.0;
   gte128.y = texel.a >= 128.0 ? 1.0 : 0.0;
   float exponent = 2.0 * texel.a - 127.0 + dot(gte128, MAGIC_VEC);
-  float res = exp2(round(exponent));
+  float res = exp2(_round(exponent));
   texel.b = texel.b - 128.0 * gte128.x;
-  res = dot(texel, SCALE_FACTOR) * exp2(round(exponent-23.0)) + res;
+  res = dot(texel, SCALE_FACTOR) * exp2(_round(exponent-23.0)) + res;
   res *= gte128.y * -2.0 + 1.0;
   return res;
 }
@@ -7114,6 +7398,9 @@ class WebGLFunctionNode extends FunctionNode {
       case 'Array(4)':
       case 'Array(3)':
       case 'Array(2)':
+      case 'Matrix(2)':
+      case 'Matrix(3)':
+      case 'Matrix(4)':
       case 'Input':
         this.astGeneric(ast.argument, result);
         break;
@@ -7679,7 +7966,7 @@ class WebGLFunctionNode extends FunctionNode {
       }
       const markupType = typeMap[type];
       if (!markupType) {
-        throw this.astErrorOutput(`Markup type ${ markupType } not handled`, varDecNode);
+        throw this.astErrorOutput(`Markup type ${ type } not handled`, varDecNode);
       }
       const declarationResult = [];
       if (actualType === 'Integer' && type === 'Integer') {
@@ -7962,7 +8249,7 @@ class WebGLFunctionNode extends FunctionNode {
             case 'Array(2)':
             case 'Array(3)':
             case 'Array(4)':
-              retArr.push(`constants_${ name }`);
+              retArr.push(`constants_${ utils.sanitizeName(name) }`);
               return retArr;
           }
         }
@@ -7977,19 +8264,23 @@ class WebGLFunctionNode extends FunctionNode {
           retArr.push(this.memberExpressionPropertyMarkup(property));
           retArr.push(']');
           return retArr;
+        case 'fn()[][]':
+          this.astCallExpression(mNode.object.object, retArr);
+          retArr.push('[');
+          retArr.push(this.memberExpressionPropertyMarkup(mNode.object.property));
+          retArr.push(']');
+          retArr.push('[');
+          retArr.push(this.memberExpressionPropertyMarkup(mNode.property));
+          retArr.push(']');
+          return retArr;
         case '[][]':
           this.astArrayExpression(mNode.object, retArr);
           retArr.push('[');
           retArr.push(this.memberExpressionPropertyMarkup(property));
           retArr.push(']');
           return retArr;
-        case 'value.value[]':
-        case 'value.value[][]':
-          if (this.removeIstanbulCoverage) {
-            return retArr;
-          }
-          default:
-            throw this.astErrorOutput('Unexpected expression', mNode);
+        default:
+          throw this.astErrorOutput('Unexpected expression', mNode);
     }
 
     if (mNode.computed === false) {
@@ -7998,12 +8289,12 @@ class WebGLFunctionNode extends FunctionNode {
         case 'Integer':
         case 'Float':
         case 'Boolean':
-          retArr.push(`${origin}_${name}`);
+          retArr.push(`${origin}_${utils.sanitizeName(name)}`);
           return retArr;
       }
     }
 
-    const markupName = `${origin}_${name}`;
+    const markupName = `${origin}_${utils.sanitizeName(name)}`;
 
     switch (type) {
       case 'Array(2)':
@@ -8104,6 +8395,14 @@ class WebGLFunctionNode extends FunctionNode {
         this.memberExpressionXYZ(xProperty, yProperty, zProperty, retArr);
         retArr.push(')');
         break;
+      case 'Matrix(2)':
+      case 'Matrix(3)':
+      case 'Matrix(4)':
+        retArr.push(`${markupName}[${this.memberExpressionPropertyMarkup(yProperty)}]`);
+        if (yProperty) {
+          retArr.push(`[${this.memberExpressionPropertyMarkup(xProperty)}]`);
+        }
+        break;
       default:
         throw new Error(`unhandled member expression "${ type }"`);
     }
@@ -8131,8 +8430,13 @@ class WebGLFunctionNode extends FunctionNode {
       throw this.astErrorOutput(`Unhandled function, couldn't find name`, ast);
     }
 
-    if (functionName === 'atan2') {
-      functionName = 'atan';
+    switch (functionName) {
+      case 'pow':
+        functionName = '_pow';
+        break;
+      case 'round':
+        functionName = '_round';
+        break;
     }
 
     if (this.calledFunctions.indexOf(functionName) < 0) {
@@ -8235,7 +8539,7 @@ class WebGLFunctionNode extends FunctionNode {
             if (targetType === argumentType) {
               if (argument.type === 'Identifier') {
                 retArr.push(`user_${utils.sanitizeName(argument.name)}`);
-              } else if (argument.type === 'ArrayExpression' || argument.type === 'MemberExpression') {
+              } else if (argument.type === 'ArrayExpression' || argument.type === 'MemberExpression' || argument.type === 'CallExpression') {
                 this.astGeneric(argument, retArr);
               } else {
                 throw this.astErrorOutput(`Unhandled argument type ${ argument.type }`, ast);
@@ -8271,9 +8575,19 @@ class WebGLFunctionNode extends FunctionNode {
   }
 
   astArrayExpression(arrNode, retArr) {
+    const returnType = this.getType(arrNode);
+
     const arrLen = arrNode.elements.length;
 
-    retArr.push('vec' + arrLen + '(');
+    switch (returnType) {
+      case 'Matrix(2)':
+      case 'Matrix(3)':
+      case 'Matrix(4)':
+        retArr.push(`mat${arrLen}(`);
+        break;
+      default:
+        retArr.push(`vec${arrLen}(`);
+    }
     for (let i = 0; i < arrLen; ++i) {
       if (i > 0) {
         retArr.push(', ');
@@ -8327,6 +8641,9 @@ const typeMap = {
   'Array(2)': 'vec2',
   'Array(3)': 'vec3',
   'Array(4)': 'vec4',
+  'Matrix(2)': 'mat2',
+  'Matrix(3)': 'mat3',
+  'Matrix(4)': 'mat4',
   'Array2D': 'sampler2D',
   'Array3D': 'sampler2D',
   'Boolean': 'bool',
@@ -9013,6 +9330,7 @@ module.exports = {
   WebGLKernelValueHTMLVideo
 };
 },{"./html-image":53}],55:[function(require,module,exports){
+const { utils } = require('../../../utils');
 const { KernelValue } = require('../../kernel-value');
 
 class WebGLKernelValue extends KernelValue {
@@ -9027,6 +9345,10 @@ class WebGLKernelValue extends KernelValue {
     this.textureSize = null;
     this.bitRatio = null;
     this.prevArg = null;
+  }
+
+  get id() {
+    return `${this.origin}_${utils.sanitizeName(this.name)}`;
   }
 
   setup() {}
@@ -9067,7 +9389,7 @@ class WebGLKernelValue extends KernelValue {
 module.exports = {
   WebGLKernelValue
 };
-},{"../../kernel-value":34}],56:[function(require,module,exports){
+},{"../../../utils":113,"../../kernel-value":34}],56:[function(require,module,exports){
 const { utils } = require('../../../utils');
 const { WebGLKernelValue } = require('./index');
 
@@ -9098,6 +9420,8 @@ module.exports = {
 },{"../../../utils":113,"./index":55}],57:[function(require,module,exports){
 const { utils } = require('../../../utils');
 const { WebGLKernelArray } = require('./array');
+
+const sameError = `Source and destination textures are the same.  Use immutable = true and manually cleanup kernel output texture memory with texture.delete()`;
 
 class WebGLKernelValueMemoryOptimizedNumberTexture extends WebGLKernelArray {
   constructor(value, settings) {
@@ -9132,12 +9456,25 @@ class WebGLKernelValueMemoryOptimizedNumberTexture extends WebGLKernelArray {
       return;
     }
     if (this.checkContext && inputTexture.context !== this.context) {
-      throw new Error(`Value ${this.name} (${this.type }) must be from same context`);
+      throw new Error(`Value ${this.name} (${this.type}) must be from same context`);
     }
 
-    const { context: gl, kernel } = this;
+    const { kernel, context: gl } = this;
     if (kernel.pipeline) {
-      kernel.updateTextureArgumentRefs(this, inputTexture);
+      if (kernel.immutable) {
+        kernel.updateTextureArgumentRefs(this, inputTexture);
+      } else {
+        if (kernel.texture.texture === inputTexture.texture) {
+          throw new Error(sameError);
+        } else if (kernel.mappedTextures) {
+          const { mappedTextures } = kernel;
+          for (let i = 0; i < mappedTextures.length; i++) {
+            if (mappedTextures[i].texture === inputTexture.texture) {
+              throw new Error(sameError);
+            }
+          }
+        }
+      }
     }
 
     gl.activeTexture(this.contextHandle);
@@ -9147,11 +9484,13 @@ class WebGLKernelValueMemoryOptimizedNumberTexture extends WebGLKernelArray {
 }
 
 module.exports = {
-  WebGLKernelValueMemoryOptimizedNumberTexture
+  WebGLKernelValueMemoryOptimizedNumberTexture,
+  sameError
 };
 },{"../../../utils":113,"./array":39}],58:[function(require,module,exports){
 const { utils } = require('../../../utils');
 const { WebGLKernelArray } = require('./array');
+const { sameError } = require('./memory-optimized-number-texture');
 
 class WebGLKernelValueNumberTexture extends WebGLKernelArray {
   constructor(value, settings) {
@@ -9193,7 +9532,20 @@ class WebGLKernelValueNumberTexture extends WebGLKernelArray {
 
     const { kernel, context: gl } = this;
     if (kernel.pipeline) {
-      kernel.updateTextureArgumentRefs(this, inputTexture);
+      if (kernel.immutable) {
+        kernel.updateTextureArgumentRefs(this, inputTexture);
+      } else {
+        if (kernel.texture.texture === inputTexture.texture) {
+          throw new Error(sameError);
+        } else if (kernel.mappedTextures) {
+          const { mappedTextures } = kernel;
+          for (let i = 0; i < mappedTextures.length; i++) {
+            if (mappedTextures[i].texture === inputTexture.texture) {
+              throw new Error(sameError);
+            }
+          }
+        }
+      }
     }
 
     gl.activeTexture(this.contextHandle);
@@ -9205,7 +9557,7 @@ class WebGLKernelValueNumberTexture extends WebGLKernelArray {
 module.exports = {
   WebGLKernelValueNumberTexture
 };
-},{"../../../utils":113,"./array":39}],59:[function(require,module,exports){
+},{"../../../utils":113,"./array":39,"./memory-optimized-number-texture":57}],59:[function(require,module,exports){
 const { utils } = require('../../../utils');
 const { WebGLKernelArray } = require('./array');
 
@@ -9767,15 +10119,15 @@ class WebGLKernel extends GLKernel {
 
     this.maxTexSize = null;
     this.onRequestSwitchKernel = null;
-    this.removeIstanbulCoverage = true;
 
+    this.texture = null;
+    this.mappedTextures = null;
     this.mergeSettings(source.settings || settings);
 
     this.threadDim = null;
     this.framebuffer = null;
     this.buffer = null;
-    this.texture = null;
-    this.mappedTextures = null;
+
     this.textureCache = [];
     this.programUniformLocationCache = {};
     this.uniform1fCache = {};
@@ -9963,7 +10315,7 @@ class WebGLKernel extends GLKernel {
       return this.createTexture();
     };
     const onRequestIndex = () => {
-      return textureIndexes++;
+      return this.constantTextureCount + textureIndexes++;
     };
     const onUpdateValueMismatch = (constructor) => {
       this.switchKernels({
@@ -9977,7 +10329,7 @@ class WebGLKernel extends GLKernel {
 
     for (let index = 0; index < args.length; index++) {
       const value = args[index];
-      const name = utils.sanitizeName(this.argumentNames[index]);
+      const name = this.argumentNames[index];
       let type;
       if (needsArgumentTypes) {
         type = utils.getVariableType(value, this.strictIntegers);
@@ -10026,8 +10378,7 @@ class WebGLKernel extends GLKernel {
     }
     this.constantBitRatios = {};
     let textureIndexes = 0;
-    for (const p in this.constants) {
-      const name = utils.sanitizeName(p);
+    for (const name in this.constants) {
       const value = this.constants[name];
       let type;
       if (needsConstantTypes) {
@@ -10069,6 +10420,7 @@ class WebGLKernel extends GLKernel {
   }
 
   build() {
+    if (this.built) return;
     this.initExtensions();
     this.validateSettings(arguments);
     this.setupConstants(arguments);
@@ -10128,6 +10480,7 @@ class WebGLKernel extends GLKernel {
     this.framebuffer = gl.createFramebuffer();
     this.framebuffer.width = texSize[0];
     this.framebuffer.height = texSize[1];
+    this.rawValueFramebuffers = {};
 
     const vertices = new Float32Array([-1, -1,
       1, -1, -1, 1,
@@ -10173,6 +10526,7 @@ class WebGLKernel extends GLKernel {
       this.subKernels !== null &&
       this.subKernels.length > 0
     ) {
+      this._mappedTextureSwitched = {};
       this._setupSubOutputTextures();
     }
     this.buildSignature(arguments);
@@ -10207,7 +10561,6 @@ class WebGLKernel extends GLKernel {
 
     gl.useProgram(this.program);
     gl.scissor(0, 0, texSize[0], texSize[1]);
-
     if (this.dynamicOutput) {
       this.setUniform3iv('uOutputDim', new Int32Array(this.threadDim));
       this.setUniform2iv('uTexSize', texSize);
@@ -10238,9 +10591,11 @@ class WebGLKernel extends GLKernel {
       if (this.pipeline) {
         gl.bindRenderbuffer(gl.RENDERBUFFER, null);
         gl.bindFramebuffer(gl.FRAMEBUFFER, this.framebuffer);
-        this._setupOutputTexture();
+        if (this.immutable) {
+          this._replaceOutputTexture();
+        }
         gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
-        return this.texture.clone();
+        return this.immutable ? this.texture.clone() : this.texture;
       }
       gl.bindRenderbuffer(gl.RENDERBUFFER, null);
       gl.bindFramebuffer(gl.FRAMEBUFFER, null);
@@ -10249,10 +10604,14 @@ class WebGLKernel extends GLKernel {
     }
 
     gl.bindFramebuffer(gl.FRAMEBUFFER, this.framebuffer);
-    this._setupOutputTexture();
+    if (this.immutable) {
+      this._replaceOutputTexture();
+    }
 
     if (this.subKernels !== null) {
-      this._setupSubOutputTextures();
+      if (this.immutable) {
+        this._replaceSubOutputTextures();
+      }
       this.drawBuffers();
     }
 
@@ -10276,10 +10635,18 @@ class WebGLKernel extends GLKernel {
     }
   }
 
+  _replaceOutputTexture() {
+    if (this.texture.beforeMutate() || this._textureSwitched) {
+      const gl = this.context;
+      gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, this.texture.texture, 0);
+      this._textureSwitched = false;
+    }
+  }
+
   _setupOutputTexture() {
-    const { context: gl, texSize } = this;
+    const gl = this.context;
+    const texSize = this.texSize;
     if (this.texture) {
-      this.texture.beforeMutate();
       gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, this.texture.texture, 0);
       return;
     }
@@ -10309,13 +10676,22 @@ class WebGLKernel extends GLKernel {
     });
   }
 
-  _setupSubOutputTextures() {
-    const { context: gl } = this;
-    if (this.mappedTextures && this.mappedTextures.length > 0) {
-      for (let i = 0; i < this.mappedTextures.length; i++) {
-        const mappedTexture = this.mappedTextures[i];
-        mappedTexture.beforeMutate();
+  _replaceSubOutputTextures() {
+    const gl = this.context;
+    for (let i = 0; i < this.mappedTextures.length; i++) {
+      const mappedTexture = this.mappedTextures[i];
+      if (mappedTexture.beforeMutate() || this._mappedTextureSwitched[i]) {
         gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0 + i + 1, gl.TEXTURE_2D, mappedTexture.texture, 0);
+        this._mappedTextureSwitched[i] = false;
+      }
+    }
+  }
+
+  _setupSubOutputTextures() {
+    const gl = this.context;
+    if (this.mappedTextures) {
+      for (let i = 0; i < this.subKernels.length; i++) {
+        gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0 + i + 1, gl.TEXTURE_2D, this.mappedTextures[i].texture, 0);
       }
       return;
     }
@@ -10637,6 +11013,19 @@ float integerCorrectionModulo(float number, float divisor) {
     return result.join('');
   }
 
+  getRawValueFramebuffer(width, height) {
+    if (!this.rawValueFramebuffers[width]) {
+      this.rawValueFramebuffers[width] = {};
+    }
+    if (!this.rawValueFramebuffers[width][height]) {
+      const framebuffer = this.context.createFramebuffer();
+      framebuffer.width = width;
+      framebuffer.height = height;
+      this.rawValueFramebuffers[width][height] = framebuffer;
+    }
+    return this.rawValueFramebuffers[width][height];
+  }
+
   getKernelResultDeclaration() {
     switch (this.returnType) {
       case 'Array(2)':
@@ -10779,7 +11168,7 @@ float integerCorrectionModulo(float number, float divisor) {
     result.push(
       '  threadId = indexTo3D(index, uOutputDim)',
       '  kernel()',
-      `  gl_FragData[0].${channel} = kernelResult`,
+      `  gl_FragData[0].${channel} = kernelResult`
     );
   }
 
@@ -10789,11 +11178,11 @@ float integerCorrectionModulo(float number, float divisor) {
       const subKernel = this.subKernels[i];
       if (subKernel.returnType === 'Integer') {
         result.push(
-          `  gl_FragData[${i + 1}].${channel} = float(subKernelResult_${this.subKernels[i].name})`,
+          `  gl_FragData[${i + 1}].${channel} = float(subKernelResult_${this.subKernels[i].name})`
         );
       } else {
         result.push(
-          `  gl_FragData[${i + 1}].${channel} = subKernelResult_${this.subKernels[i].name}`,
+          `  gl_FragData[${i + 1}].${channel} = subKernelResult_${this.subKernels[i].name}`
         );
       }
     }
@@ -10814,11 +11203,11 @@ float integerCorrectionModulo(float number, float divisor) {
       const subKernel = this.subKernels[i];
       if (subKernel.returnType === 'Integer') {
         result.push(
-          `  gl_FragData[${i + 1}][0] = float(subKernelResult_${subKernel.name})`,
+          `  gl_FragData[${i + 1}][0] = float(subKernelResult_${subKernel.name})`
         );
       } else {
         result.push(
-          `  gl_FragData[${i + 1}][0] = subKernelResult_${subKernel.name}`,
+          `  gl_FragData[${i + 1}][0] = subKernelResult_${subKernel.name}`
         );
       }
     }
@@ -10840,7 +11229,7 @@ float integerCorrectionModulo(float number, float divisor) {
     for (let i = 0; i < this.subKernels.length; ++i) {
       result.push(
         `  gl_FragData[${i + 1}][0] = subKernelResult_${this.subKernels[i].name}[0]`,
-        `  gl_FragData[${i + 1}][1] = subKernelResult_${this.subKernels[i].name}[1]`,
+        `  gl_FragData[${i + 1}][1] = subKernelResult_${this.subKernels[i].name}[1]`
       );
     }
     return result;
@@ -10863,7 +11252,7 @@ float integerCorrectionModulo(float number, float divisor) {
       result.push(
         `  gl_FragData[${i + 1}][0] = subKernelResult_${this.subKernels[i].name}[0]`,
         `  gl_FragData[${i + 1}][1] = subKernelResult_${this.subKernels[i].name}[1]`,
-        `  gl_FragData[${i + 1}][2] = subKernelResult_${this.subKernels[i].name}[2]`,
+        `  gl_FragData[${i + 1}][2] = subKernelResult_${this.subKernels[i].name}[2]`
       );
     }
     return result;
@@ -10888,11 +11277,11 @@ float integerCorrectionModulo(float number, float divisor) {
           const subKernel = this.subKernels[i];
           if (subKernel.returnType === 'Integer') {
             result.push(
-              `  gl_FragData[${i + 1}] = float(subKernelResult_${this.subKernels[i].name})`,
+              `  gl_FragData[${i + 1}] = float(subKernelResult_${this.subKernels[i].name})`
             );
           } else {
             result.push(
-              `  gl_FragData[${i + 1}] = subKernelResult_${this.subKernels[i].name}`,
+              `  gl_FragData[${i + 1}] = subKernelResult_${this.subKernels[i].name}`
             );
           }
         }
@@ -10901,7 +11290,7 @@ float integerCorrectionModulo(float number, float divisor) {
         for (let i = 0; i < this.subKernels.length; ++i) {
           result.push(
             `  gl_FragData[${i + 1}][0] = subKernelResult_${this.subKernels[i].name}[0]`,
-            `  gl_FragData[${i + 1}][1] = subKernelResult_${this.subKernels[i].name}[1]`,
+            `  gl_FragData[${i + 1}][1] = subKernelResult_${this.subKernels[i].name}[1]`
           );
         }
         break;
@@ -10910,7 +11299,7 @@ float integerCorrectionModulo(float number, float divisor) {
           result.push(
             `  gl_FragData[${i + 1}][0] = subKernelResult_${this.subKernels[i].name}[0]`,
             `  gl_FragData[${i + 1}][1] = subKernelResult_${this.subKernels[i].name}[1]`,
-            `  gl_FragData[${i + 1}][2] = subKernelResult_${this.subKernels[i].name}[2]`,
+            `  gl_FragData[${i + 1}][2] = subKernelResult_${this.subKernels[i].name}[2]`
           );
         }
         break;
@@ -10920,7 +11309,7 @@ float integerCorrectionModulo(float number, float divisor) {
             `  gl_FragData[${i + 1}][0] = subKernelResult_${this.subKernels[i].name}[0]`,
             `  gl_FragData[${i + 1}][1] = subKernelResult_${this.subKernels[i].name}[1]`,
             `  gl_FragData[${i + 1}][2] = subKernelResult_${this.subKernels[i].name}[2]`,
-            `  gl_FragData[${i + 1}][3] = subKernelResult_${this.subKernels[i].name}[3]`,
+            `  gl_FragData[${i + 1}][3] = subKernelResult_${this.subKernels[i].name}[3]`
           );
         }
         break;
@@ -10960,11 +11349,19 @@ float integerCorrectionModulo(float number, float divisor) {
   }
 
   destroy(removeCanvasReferences) {
+    if (!this.context) return;
     if (this.buffer) {
       this.context.deleteBuffer(this.buffer);
     }
     if (this.framebuffer) {
       this.context.deleteFramebuffer(this.framebuffer);
+    }
+    for (const width in this.rawValueFramebuffers) {
+      for (const height in this.rawValueFramebuffers[width]) {
+        this.context.deleteFramebuffer(this.rawValueFramebuffers[width][height]);
+        delete this.rawValueFramebuffers[width][height];
+      }
+      delete this.rawValueFramebuffers[width];
     }
     if (this.vertShader) {
       this.context.deleteShader(this.vertShader);
@@ -11018,6 +11415,10 @@ float integerCorrectionModulo(float number, float divisor) {
     this.destroyExtensions();
     delete this.context;
     delete this.canvas;
+    if (!this.gpu) return;
+    const i = this.gpu.kernels.indexOf(this);
+    if (i === -1) return;
+    this.gpu.kernels.splice(i, 1);
   }
 
   destroyExtensions() {
@@ -11078,6 +11479,49 @@ __PLUGINS__;
 __CONSTANTS__;
 
 in vec2 vTexCoord;
+
+float atan2(float v1, float v2) {
+  if (v1 == 0.0 || v2 == 0.0) return 0.0;
+  return atan(v1 / v2);
+}
+
+float cbrt(float x) {
+  if (x >= 0.0) {
+    return pow(x, 1.0 / 3.0);
+  } else {
+    return -pow(x, 1.0 / 3.0);
+  }
+}
+
+float expm1(float x) {
+  return pow(${Math.E}, x) - 1.0; 
+}
+
+float fround(highp float x) {
+  return x;
+}
+
+float imul(float v1, float v2) {
+  return float(int(v1) * int(v2));
+}
+
+float log10(float x) {
+  return log2(x) * (1.0 / log2(10.0));
+}
+
+float log1p(float x) {
+  return log(1.0 + x);
+}
+
+float _pow(float v1, float v2) {
+  if (v2 == 0.0) return 1.0;
+  return pow(v1, v2);
+}
+
+float _round(float x) {
+  return floor(x + 0.5);
+}
+
 
 const int BIT_COUNT = 32;
 int modi(int x, int y) {
@@ -12382,6 +12826,7 @@ class WebGL2Kernel extends WebGLKernel {
     return Object.freeze({
       isFloatRead: this.getIsFloatRead(),
       isIntegerDivisionAccurate: this.getIsIntegerDivisionAccurate(),
+      isSpeedTacticSupported: this.getIsSpeedTacticSupported(),
       kernelMap: true,
       isTextureFloat: true,
       isDrawBuffers: true,
@@ -12398,10 +12843,6 @@ class WebGL2Kernel extends WebGLKernel {
 
   static getIsTextureFloat() {
     return true;
-  }
-
-  static getIsIntegerDivisionAccurate() {
-    return super.getIsIntegerDivisionAccurate();
   }
 
   static getChannelCount() {
@@ -12550,7 +12991,7 @@ class WebGL2Kernel extends WebGLKernel {
     }
   }
   getInternalFormat() {
-    const { context: gl, optimizeFloatMemory, pipeline, precision } = this;
+    const { context: gl } = this;
 
     if (this.precision === 'single') {
       if (this.pipeline) {
@@ -12578,14 +13019,14 @@ class WebGL2Kernel extends WebGLKernel {
   }
 
   _setupOutputTexture() {
-    const { context: gl } = this;
+    const gl = this.context;
     if (this.texture) {
-      this.texture.beforeMutate();
       gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, this.texture.texture, 0);
       return;
     }
+    gl.bindFramebuffer(gl.FRAMEBUFFER, this.framebuffer);
     const texture = gl.createTexture();
-    const { texSize } = this;
+    const texSize = this.texSize;
     gl.activeTexture(gl.TEXTURE0 + this.constantTextureCount + this.argumentTextureCount);
     gl.bindTexture(gl.TEXTURE_2D, texture);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.REPEAT);
@@ -12612,16 +13053,14 @@ class WebGL2Kernel extends WebGLKernel {
   }
 
   _setupSubOutputTextures() {
-    const { context: gl } = this;
-    if (this.mappedTextures && this.mappedTextures.length > 0) {
-      for (let i = 0; i < this.mappedTextures.length; i++) {
-        const mappedTexture = this.mappedTextures[i];
-        mappedTexture.beforeMutate();
-        gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0 + i + 1, gl.TEXTURE_2D, mappedTexture.texture, 0);
+    const gl = this.context;
+    if (this.mappedTextures) {
+      for (let i = 0; i < this.subKernels.length; i++) {
+        gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0 + i + 1, gl.TEXTURE_2D, this.mappedTextures[i].texture, 0);
       }
       return;
     }
-    const { texSize } = this;
+    const texSize = this.texSize;
     this.drawBuffersMap = [gl.COLOR_ATTACHMENT0];
     this.mappedTextures = [];
     for (let i = 0; i < this.subKernels.length; i++) {
@@ -12783,7 +13222,7 @@ class WebGL2Kernel extends WebGLKernel {
     result.push(
       '  threadId = indexTo3D(index, uOutputDim)',
       '  kernel()',
-      `  data0.${channel} = kernelResult`,
+      `  data0.${channel} = kernelResult`
     );
   }
 
@@ -12793,11 +13232,11 @@ class WebGL2Kernel extends WebGLKernel {
       const subKernel = this.subKernels[i];
       if (subKernel.returnType === 'Integer') {
         result.push(
-          `  data${i + 1}.${channel} = float(subKernelResult_${subKernel.name})`,
+          `  data${i + 1}.${channel} = float(subKernelResult_${subKernel.name})`
         );
       } else {
         result.push(
-          `  data${i + 1}.${channel} = subKernelResult_${subKernel.name}`,
+          `  data${i + 1}.${channel} = subKernelResult_${subKernel.name}`
         );
       }
     }
@@ -12818,11 +13257,11 @@ class WebGL2Kernel extends WebGLKernel {
       const subKernel = this.subKernels[i];
       if (subKernel.returnType === 'Integer') {
         result.push(
-          `  data${i + 1}[0] = float(subKernelResult_${subKernel.name})`,
+          `  data${i + 1}[0] = float(subKernelResult_${subKernel.name})`
         );
       } else {
         result.push(
-          `  data${i + 1}[0] = subKernelResult_${subKernel.name}`,
+          `  data${i + 1}[0] = subKernelResult_${subKernel.name}`
         );
       }
     }
@@ -12845,7 +13284,7 @@ class WebGL2Kernel extends WebGLKernel {
       const subKernel = this.subKernels[i];
       result.push(
         `  data${i + 1}[0] = subKernelResult_${subKernel.name}[0]`,
-        `  data${i + 1}[1] = subKernelResult_${subKernel.name}[1]`,
+        `  data${i + 1}[1] = subKernelResult_${subKernel.name}[1]`
       );
     }
     return result;
@@ -12869,7 +13308,7 @@ class WebGL2Kernel extends WebGLKernel {
       result.push(
         `  data${i + 1}[0] = subKernelResult_${subKernel.name}[0]`,
         `  data${i + 1}[1] = subKernelResult_${subKernel.name}[1]`,
-        `  data${i + 1}[2] = subKernelResult_${subKernel.name}[2]`,
+        `  data${i + 1}[2] = subKernelResult_${subKernel.name}[2]`
       );
     }
     return result;
@@ -12888,7 +13327,7 @@ class WebGL2Kernel extends WebGLKernel {
     if (!this.subKernels) return result;
     for (let i = 0; i < this.subKernels.length; ++i) {
       result.push(
-        `  data${i + 1} = subKernelResult_${this.subKernels[i].name}`,
+        `  data${i + 1} = subKernelResult_${this.subKernels[i].name}`
       );
     }
     return result;
@@ -13034,8 +13473,6 @@ class GPU {
     this.functions = [];
     this.nativeFunctions = [];
     this.injectedNative = null;
-    this.onIstanbulCoverageVariable = settings.onIstanbulCoverageVariable || null;
-    this.removeIstanbulCoverage = settings.hasOwnProperty('removeIstanbulCoverage') ? settings.removeIstanbulCoverage : null;
     if (this.mode === 'dev') return;
     this.chooseKernel();
     if (settings.functions) {
@@ -13117,9 +13554,10 @@ class GPU {
       throw new Error('source parameter not a function');
     }
 
+    const kernels = this.kernels;
     if (this.mode === 'dev') {
       const devKernel = gpuMock(source, upgradeDeprecatedCreateKernelSettings(settings));
-      this.kernels.push(devKernel);
+      kernels.push(devKernel);
       return devKernel;
     }
 
@@ -13159,15 +13597,15 @@ class GPU {
       return result;
     }
 
-    function onRequestSwitchKernel(reasons, args, kernel) {
-      if (kernel.debug) {
+    function onRequestSwitchKernel(reasons, args, _kernel) {
+      if (_kernel.debug) {
         console.warn('Switching kernels');
       }
       let newOutput = null;
-      if (kernel.signature && !switchableKernels[kernel.signature]) {
-        switchableKernels[kernel.signature] = kernel;
+      if (_kernel.signature && !switchableKernels[_kernel.signature]) {
+        switchableKernels[_kernel.signature] = _kernel;
       }
-      if (kernel.dynamicOutput) {
+      if (_kernel.dynamicOutput) {
         for (let i = reasons.length - 1; i >= 0; i--) {
           const reason = reasons[i];
           if (reason.type === 'outputPrecisionMismatch') {
@@ -13176,47 +13614,50 @@ class GPU {
         }
       }
 
-      const Constructor = kernel.constructor;
-      const argumentTypes = Constructor.getArgumentTypes(kernel, args);
-      const signature = Constructor.getSignature(kernel, argumentTypes);
+      const Constructor = _kernel.constructor;
+      const argumentTypes = Constructor.getArgumentTypes(_kernel, args);
+      const signature = Constructor.getSignature(_kernel, argumentTypes);
       const existingKernel = switchableKernels[signature];
       if (existingKernel) {
+        existingKernel.onActivate(_kernel);
         return existingKernel;
       }
 
       const newKernel = switchableKernels[signature] = new Constructor(source, {
         argumentTypes,
-        constantTypes: kernel.constantTypes,
-        graphical: kernel.graphical,
-        loopMaxIterations: kernel.loopMaxIterations,
-        constants: kernel.constants,
-        dynamicOutput: kernel.dynamicOutput,
-        dynamicArgument: kernel.dynamicArguments,
-        context: kernel.context,
-        canvas: kernel.canvas,
-        output: newOutput || kernel.output,
-        precision: kernel.precision,
-        pipeline: kernel.pipeline,
-        immutable: kernel.immutable,
-        optimizeFloatMemory: kernel.optimizeFloatMemory,
-        fixIntegerDivisionAccuracy: kernel.fixIntegerDivisionAccuracy,
-        functions: kernel.functions,
-        nativeFunctions: kernel.nativeFunctions,
-        injectedNative: kernel.injectedNative,
-        subKernels: kernel.subKernels,
-        strictIntegers: kernel.strictIntegers,
-        debug: kernel.debug,
-        gpu: kernel.gpu,
+        constantTypes: _kernel.constantTypes,
+        graphical: _kernel.graphical,
+        loopMaxIterations: _kernel.loopMaxIterations,
+        constants: _kernel.constants,
+        dynamicOutput: _kernel.dynamicOutput,
+        dynamicArgument: _kernel.dynamicArguments,
+        context: _kernel.context,
+        canvas: _kernel.canvas,
+        output: newOutput || _kernel.output,
+        precision: _kernel.precision,
+        pipeline: _kernel.pipeline,
+        immutable: _kernel.immutable,
+        optimizeFloatMemory: _kernel.optimizeFloatMemory,
+        fixIntegerDivisionAccuracy: _kernel.fixIntegerDivisionAccuracy,
+        functions: _kernel.functions,
+        nativeFunctions: _kernel.nativeFunctions,
+        injectedNative: _kernel.injectedNative,
+        subKernels: _kernel.subKernels,
+        strictIntegers: _kernel.strictIntegers,
+        debug: _kernel.debug,
+        gpu: _kernel.gpu,
         validate,
-        returnType: kernel.returnType,
-        onIstanbulCoverageVariable: kernel.onIstanbulCoverageVariable,
-        removeIstanbulCoverage: kernel.removeIstanbulCoverage,
-        tactic: kernel.tactic,
+        returnType: _kernel.returnType,
+        tactic: _kernel.tactic,
         onRequestFallback,
         onRequestSwitchKernel,
+        texture: _kernel.texture,
+        mappedTextures: _kernel.mappedTextures,
+        drawBuffersMap: _kernel.drawBuffersMap,
       });
       newKernel.build.apply(newKernel, args);
       kernelRun.replaceKernel(newKernel);
+      kernels.push(newKernel);
       return newKernel;
     }
     const mergedSettings = Object.assign({
@@ -13225,25 +13666,24 @@ class GPU {
       functions: this.functions,
       nativeFunctions: this.nativeFunctions,
       injectedNative: this.injectedNative,
-      onIstanbulCoverageVariable: this.onIstanbulCoverageVariable,
-      removeIstanbulCoverage: this.removeIstanbulCoverage,
       gpu: this,
       validate,
       onRequestFallback,
       onRequestSwitchKernel
     }, settingsCopy);
 
-    const kernelRun = kernelRunShortcut(new this.Kernel(source, mergedSettings));
+    const kernel = new this.Kernel(source, mergedSettings);
+    const kernelRun = kernelRunShortcut(kernel);
 
     if (!this.canvas) {
-      this.canvas = kernelRun.canvas;
+      this.canvas = kernel.canvas;
     }
 
     if (!this.context) {
-      this.context = kernelRun.context;
+      this.context = kernel.context;
     }
 
-    this.kernels.push(kernelRun);
+    kernels.push(kernel);
 
     return kernelRun;
   }
@@ -13686,13 +14126,11 @@ class Texture {
   }
 
   delete() {
-    if (this._deleted) return;
-    this._deleted = true;
-    if (this.texture._refs) {
-      this.texture._refs--;
-      if (this.texture._refs) return;
-    }
-    return this.context.deleteTexture(this.texture);
+    throw new Error(`Not implemented on ${this.constructor.name}`);
+  }
+
+  clear() {
+    throw new Error(`Not implemented on ${this.constructor.name}`);
   }
 }
 
@@ -14246,7 +14684,7 @@ const utils = {
           }
           case 'VariableDeclarator':
             if (ast.init.object && ast.init.object.type === 'ThisExpression') {
-              const lookup = thisLookup(ast.init.property.name);
+              const lookup = thisLookup(ast.init.property.name, true);
               if (lookup) {
                 return `${ast.id.name} = ${flatten(ast.init)}`;
               } else {
@@ -14344,7 +14782,7 @@ const utils = {
         if (!flattened[functionDependency]) {
           flattened[functionDependency] = true;
         }
-        flattenedFunctionDependencies.push(utils.flattenFunctionToString(functionDependency, settings) + '\n');
+        functionDependency ? flattenedFunctionDependencies.push(utils.flattenFunctionToString(functionDependency, settings) + '\n') : '';
       }
       return flattenedFunctionDependencies.join('') + result;
     }

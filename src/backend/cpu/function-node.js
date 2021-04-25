@@ -468,18 +468,6 @@ class CPUFunctionNode extends FunctionNode {
             return retArr;
         }
         break;
-      case 'value.value[]': // istanbul coverage variable
-        if (this.removeIstanbulCoverage) {
-          return retArr;
-        }
-        retArr.push(`${mNode.object.object.name}.${mNode.object.property.name}[${mNode.property.value}]`);
-        return retArr;
-      case 'value.value[][]': // istanbul coverage variable
-        if (this.removeIstanbulCoverage) {
-          return retArr;
-        }
-        retArr.push(`${mNode.object.object.object.name}.${mNode.object.object.property.name}[${mNode.object.property.value}][${mNode.property.value}]`);
-        return retArr;
       case 'this.constants.value':
       case 'this.constants.value[]':
       case 'this.constants.value[][]':
@@ -487,6 +475,15 @@ class CPUFunctionNode extends FunctionNode {
         break;
       case 'fn()[]':
         this.astGeneric(mNode.object, retArr);
+        retArr.push('[');
+        this.astGeneric(mNode.property, retArr);
+        retArr.push(']');
+        return retArr;
+      case 'fn()[][]':
+        this.astGeneric(mNode.object.object, retArr);
+        retArr.push('[');
+        this.astGeneric(mNode.object.property, retArr);
+        retArr.push(']');
         retArr.push('[');
         this.astGeneric(mNode.property, retArr);
         retArr.push(']');
@@ -515,6 +512,9 @@ class CPUFunctionNode extends FunctionNode {
       case 'Array(2)':
       case 'Array(3)':
       case 'Array(4)':
+      case 'Matrix(2)':
+      case 'Matrix(3)':
+      case 'Matrix(4)':
       case 'HTMLImageArray':
       case 'ArrayTexture(1)':
       case 'ArrayTexture(2)':
@@ -637,18 +637,23 @@ class CPUFunctionNode extends FunctionNode {
    * @returns {Array} the append retArr
    */
   astArrayExpression(arrNode, retArr) {
+    const returnType = this.getType(arrNode);
     const arrLen = arrNode.elements.length;
-
-    retArr.push('new Float32Array([');
+    const elements = [];
     for (let i = 0; i < arrLen; ++i) {
-      if (i > 0) {
-        retArr.push(', ');
-      }
-      const subNode = arrNode.elements[i];
-      this.astGeneric(subNode, retArr)
+      const element = [];
+      this.astGeneric(arrNode.elements[i], element);
+      elements.push(element.join(''));
     }
-    retArr.push('])');
-
+    switch (returnType) {
+      case 'Matrix(2)':
+      case 'Matrix(3)':
+      case 'Matrix(4)':
+        retArr.push(`[${elements.join(', ')}]`);
+        break;
+      default:
+        retArr.push(`new Float32Array([${elements.join(', ')}])`);
+    }
     return retArr;
   }
 
